@@ -16,144 +16,166 @@
 
 set -e
 
-RETIRE_TIME=$(date +"%Y-%m-%dT%H-%M-%SZ")
+retire_time=$(date +"%Y-%m-%dT%H-%M-%SZ")
 
 # flags
-KUBE_CONTEXT=''
-AWS_PROFILE=''
-ROLE=''
-REGISTRY_FLAG=''
+kube_context=''
+aws_profile=''
+role=''
+registry_flag=''
 
-while getopts 'c:p:r:e' flag; do
-  case "${flag}" in
-    c) KUBE_CONTEXT="${OPTARG}" ;;
-    p) AWS_PROFILE="${OPTARG}" ;;
-    r) ROLE="${OPTARG}" ;;
-    e) REGISTRY_FLAG='true' ;;
-    *) error "Unexpected option ${flag}" ;;
+usage() {
+  cat <<EOF
+Usage: $0 -c <kube_context> -p [aws_profile] -r [role] [-e]
+
+  -e    Registry flag - set if cluster contains docker registry and
+        needs to be moved prior to rest of the pods"
+EOF
+}
+
+while getopts 'c:p:r:eh' flag; do
+  case "$flag" in
+    c) kube_context="$OPTARG" ;;
+    p) aws_profile="$OPTARG" ;;
+    r) role="$OPTARG" ;;
+    e) registry_flag='true' ;;
+    h) usage && exit 0 ;;
+    *) echo "Unexpected option $flag" && usage && exit 1 ;;
   esac
 done
 
-usage() {
-  echo "Usage: ${0} -c <KUBE_CONTEXT> -p <AWS_PROFILE> -r [ROLE] -e [REGISTRY_FLAG]"
-}
+### Deps
+deps="
+  jq
+  kubectl
+  aws
+"
 
-### Validation
-type jq >/dev/null      || (echo "'jq' not found" && exit 1)
-type kubectl >/dev/null || (echo "'kubectl' not found" && exit 1)
-type aws >/dev/null     || (echo "'aws' not found" && exit 1)
+missing_deps=
+for d in $deps; do
+  if ! command -v $d &> /dev/null; then
+    missing_deps+="$d "
+  fi
+done
 
-if [[ ! -n "${KUBE_CONTEXT}" ]]; then
-  usage
+if [ -n "$missing_deps" ]; then
+  echo "Missing dependencies: $missing_deps"
   exit 1
 fi
 
-if [[ -n "${AWS_PROFILE}" ]]; then
-  echo "Using ${AWS_PROFILE} aws profile"
-  AWS_PROFILE_CLI="--profile=${AWS_PROFILE}"
-elif [[ -n "${AWS_ACCESS_KEY_ID}" && -n "${AWS_SECRET_ACCESS_KEY}" && -n "${AWS_REGION}" ]]; then
-  echo "Using ${AWS_ACCESS_KEY_ID} aws keys"
-  AWS_PROFILE_CLI=""
-else
-  echo "You need to set AWS_PROFILE or (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_REGION)"
-  usage
-  exit 1
-fi
 ###
 
-echo "Current Kubernetes cluster is ${KUBE_CONTEXT}"
+### Validation
+if [ -z "$kube_context" ]; then
+  usage
+  exit 1
+fi
+
+aws_opts=
+if [ -n "$aws_profile" ]; then
+  if aws configure list --profile $aws_profile &> /dev/null; then
+    aws_opts="--profile=$aws_profile"
+    aws $aws_opts iam get-user >/dev/null || exit 1
+  else
+    echo "Invalid profile: $aws_profile"
+    exit 1
+  fi
+fi
+
+echo "kube cluster :: $kube_context"
 
 handle_registry() {
-  if [[ ${REGISTRY_FLAG} == 'true' ]]; then
-    ns="sys-registry"
-    registry_pod=$(kubectl --context=${KUBE_CONTEXT} -n${ns} get pod \
+  if [ "$registry_flag" == "true" ]; then
+    local kube_opts="--context=$kube_context -nsys-registry"
+    local registry_pod=$(kubectl $kube_opts get pod \
       | grep docker-registry \
       | awk '{print $1}')
-    kubectl --context=${KUBE_CONTEXT} -n${ns} delete pod ${registry_pod}
+    kubectl $kube_opts delete pod $registry_pod
 
-    until kubectl --context=${KUBE_CONTEXT} -n${ns} get pod | grep docker-registry | grep Running; do
-      kubectl --context=${KUBE_CONTEXT} -n${ns} get pod | grep docker-registry
+    until kubectl $kube_opts get pod | grep docker-registry | grep Running; do
+      kubectl $kube_opts get pod | grep docker-registry
     done
   fi
 }
 
 label_for_cycling() {
-  role=${1}
-  nodes=$(kubectl --context=${KUBE_CONTEXT} get nodes -l role=${role} -o json | jq -r '.items[].metadata.name')
-  echo "${KUBE_CONTEXT} cluster has $(echo "${nodes}" | wc -l) ${role}s"
+  local role=$1
+  local nodes=$(kubectl --context=$kube_context get nodes -l role=$role -o json | jq -r '.items[].metadata.name')
+  echo "$kube_context :: $(echo "$nodes" | wc -l) ${role}s"
   echo "Labelling ${role}s for retirement..."
-  while read -r node
-  do
-    kubectl --context=${KUBE_CONTEXT} label node ${node} retiring=${RETIRE_TIME} --overwrite=true
-    kubectl --context=${KUBE_CONTEXT} cordon ${node}
-  done <<< "${nodes}"
+  for node in $nodes; do
+    kubectl --context=$kube_context label node $node retiring=$retire_time --overwrite=true
+    kubectl --context=$kube_context cordon $node
+  done
 }
 
 kill_node() {
-  node=${1}
+  local node=$1
 
-  echo "---------- ${node} ----------"
-  echo "draining ${node}..."
-  time kubectl --context=${KUBE_CONTEXT} drain ${node} --ignore-daemonsets --force --delete-local-data
-  instance_id=$(aws ${AWS_PROFILE_CLI} --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${node}" \
+  echo "---------- $node ----------"
+  echo "draining $node..."
+  time kubectl --context=$kube_context drain $node --ignore-daemonsets --force --delete-local-data
+  local instance_id=$(aws $aws_opts --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=$node" \
     | jq -r '.Reservations[].Instances[].InstanceId')
-  echo "terminating ${node} with instance-id ${instance_id}"
-  time aws ${AWS_PROFILE_CLI} ec2 terminate-instances --instance-ids=${instance_id}
+  echo "terminating $node with instance-id $instance_id"
+  time aws $aws_opts ec2 terminate-instances --instance-ids=$instance_id
   echo "----------------------------------------------------------------------"
 }
 
 cycle_nodes() {
-  role=${1}
+  local role=$1
 
   # - double ASG size
-  instance_address=$(kubectl --context=${KUBE_CONTEXT} get nodes -l role=${role},retiring=${RETIRE_TIME} -o json | jq -r '.items[0].metadata.name')
-  instance_id=$(aws ${AWS_PROFILE_CLI} --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${instance_address}" \
+  local instance_address=$(kubectl --context=$kube_context get nodes -l role=$role,retiring=$retire_time -o json | jq -r '.items[0].metadata.name')
+  local instance_id=$(aws $aws_opts --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=$instance_address" \
     | jq -r '.Reservations[].Instances[].InstanceId')
-  asg_name=$(aws ${AWS_PROFILE_CLI} --output=json autoscaling describe-auto-scaling-groups \
-    | jq -r '."AutoScalingGroups"[] | select(."Instances"[]."InstanceId"=="'${instance_id}'") | ."AutoScalingGroupName"')
-  asg_count=$(aws ${AWS_PROFILE_CLI} --output=json autoscaling describe-auto-scaling-groups \
-    | jq -r '."AutoScalingGroups"[] | select(."Instances"[]."InstanceId"=="'${instance_id}'") | ."DesiredCapacity"')
-  aws ${AWS_PROFILE_CLI} --output=json autoscaling update-auto-scaling-group --auto-scaling-group-name "${asg_name}" --desired-capacity $(( ${asg_count} * 2)) --max-size $(( ${asg_count} * 2))
+  local asg_name=$(aws $aws_opts --output=json autoscaling describe-auto-scaling-groups \
+    | jq -r '."AutoScalingGroups"[] | select(."Instances"[]."InstanceId"=="'$instance_id'") | ."AutoScalingGroupName"')
+  local asg_count=$(aws $aws_opts --output=json autoscaling describe-auto-scaling-groups \
+    | jq -r '."AutoScalingGroups"[] | select(."Instances"[]."InstanceId"=="'$instance_id'") | ."DesiredCapacity"')
+  aws $aws_opts --output=json autoscaling update-auto-scaling-group --auto-scaling-group-name "$asg_name" --desired-capacity $(( $asg_count * 2)) --max-size $(( $asg_count * 2))
 
   # - wait for 2x group
-  count=${asg_count}
-  while [[ ${count} -lt $(( ${asg_count} * 2)) ]]
-  do
-    echo "${count}/$(( ${asg_count} * 2)) ready ${role}s"
+  local count=0
+  while [ $count -lt $asg_count ]; do
     sleep 8
-    count=$(kubectl --context=${KUBE_CONTEXT} get node -lrole=${role} | grep -v NotReady | tail -n +2 | wc -l)
+    count=$(kubectl --context=$kube_context get node -lrole=$role -Lrole,retiring \
+      | grep -v $retire_time \
+      | grep -v NotReady \
+      | tail -n +2 \
+      | wc -l)
+    echo "$count/$asg_count ready ${role}s"
   done
 
   # - stop ASG actions
-  aws ${AWS_PROFILE_CLI} --output=json autoscaling suspend-processes --auto-scaling-group-name "${asg_name}"
+  aws $aws_opts --output=json autoscaling suspend-processes --auto-scaling-group-name "$asg_name"
 
   ### - move the registry
-  if [[ ${role} == "worker" ]]; then
+  if [ "$role" == "worker" ]; then
     handle_registry
   fi
 
   # - drain/terminate labelled masters (sequentially)
-  old_nodes=$(kubectl --context=${KUBE_CONTEXT} get nodes -l role=${role},retiring=${RETIRE_TIME} -o json | jq -r '.items[].metadata.name')
-  while read -r old_node
-  do
-    kill_node ${old_node}
-  done <<< "${old_nodes}"
+  local old_nodes=$(kubectl --context=$kube_context get nodes -l role=$role,retiring=$retire_time -o json | jq -r '.items[].metadata.name')
+  for old_node in $old_nodes; do
+    kill_node $old_node
+  done
 
   # - resize ASG to original size
-  aws ${AWS_PROFILE_CLI} --output=json autoscaling update-auto-scaling-group --auto-scaling-group-name "${asg_name}" --desired-capacity ${asg_count} --max-size ${asg_count}
+  aws $aws_opts --output=json autoscaling update-auto-scaling-group --auto-scaling-group-name "$asg_name" --desired-capacity $asg_count --max-size $asg_count
 
   # - re-enable ASG actions
-  aws ${AWS_PROFILE_CLI} --output=json autoscaling resume-processes --auto-scaling-group-name "${asg_name}"
+  aws $aws_opts --output=json autoscaling resume-processes --auto-scaling-group-name "$asg_name"
 }
 
 update() {
-  role=${1}
-  label_for_cycling ${role}
-  cycle_nodes ${role}
+  local role=$1
+  label_for_cycling $role
+  cycle_nodes $role
 }
 
-if [[ -n ${ROLE} ]]; then
-  update ${ROLE}
+if [ -n "$role" ]; then
+  update $role
 else
   update master
   update worker

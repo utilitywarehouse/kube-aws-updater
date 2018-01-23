@@ -16,8 +16,6 @@
 
 set -e
 
-. ./util.sh
-
 RETIRE_TIME=$(date +"%Y-%m-%dT%H-%M-%SZ")
 
 # flags
@@ -41,9 +39,9 @@ usage() {
 }
 
 ### Validation
-type jq >/dev/null      || (log ${RED} "'jq' not found" && exit 1)
-type kubectl >/dev/null || (log ${RED} "'kubectl' not found" && exit 1)
-type aws >/dev/null     || (log ${RED} "'aws' not found" && exit 1)
+type jq >/dev/null      || (echo "'jq' not found" && exit 1)
+type kubectl >/dev/null || (echo "'kubectl' not found" && exit 1)
+type aws >/dev/null     || (echo "'aws' not found" && exit 1)
 
 if [[ ! -n "${KUBE_CONTEXT}" ]]; then
   usage
@@ -51,19 +49,19 @@ if [[ ! -n "${KUBE_CONTEXT}" ]]; then
 fi
 
 if [[ -n "${AWS_PROFILE}" ]]; then
-  log ${NC} "Using ${AWS_PROFILE} aws profile"
+  echo "Using ${AWS_PROFILE} aws profile"
   AWS_PROFILE_CLI="--profile=${AWS_PROFILE}"
 elif [[ -n "${AWS_ACCESS_KEY_ID}" && -n "${AWS_SECRET_ACCESS_KEY}" && -n "${AWS_REGION}" ]]; then
-  log ${NC} "Using ${AWS_ACCESS_KEY_ID} aws keys"
+  echo "Using ${AWS_ACCESS_KEY_ID} aws keys"
   AWS_PROFILE_CLI=""
 else
-  log ${RED} "You need to set AWS_PROFILE or (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_REGION)"
+  echo "You need to set AWS_PROFILE or (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_REGION)"
   usage
   exit 1
 fi
 ###
 
-log ${GREEN} "Current Kubernetes cluster is ${KUBE_CONTEXT}"
+echo "Current Kubernetes cluster is ${KUBE_CONTEXT}"
 
 handle_registry() {
   if [[ ${REGISTRY_FLAG} == 'true' ]]; then
@@ -82,8 +80,8 @@ handle_registry() {
 label_for_cycling() {
   role=${1}
   nodes=$(kubectl --context=${KUBE_CONTEXT} get nodes -l role=${role} -o json | jq -r '.items[].metadata.name')
-  log ${NC} "${KUBE_CONTEXT} cluster has $(echo "${nodes}" | wc -l) ${role}s"
-  log ${BLUE} "Labelling ${role}s for retirement..."
+  echo "${KUBE_CONTEXT} cluster has $(echo "${nodes}" | wc -l) ${role}s"
+  echo "Labelling ${role}s for retirement..."
   while read -r node
   do
     kubectl --context=${KUBE_CONTEXT} label node ${node} retiring=${RETIRE_TIME} --overwrite=true
@@ -94,14 +92,14 @@ label_for_cycling() {
 kill_node() {
   node=${1}
 
-  log ${BLUE} "---------- ${node} ----------"
-  log ${BLUE} "draining ${node}..."
+  echo "---------- ${node} ----------"
+  echo "draining ${node}..."
   time kubectl --context=${KUBE_CONTEXT} drain ${node} --ignore-daemonsets --force --delete-local-data
   instance_id=$(aws ${AWS_PROFILE_CLI} --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${node}" \
     | jq -r '.Reservations[].Instances[].InstanceId')
-  log ${BLUE} "terminating ${node} with instance-id ${instance_id}"
+  echo "terminating ${node} with instance-id ${instance_id}"
   time aws ${AWS_PROFILE_CLI} ec2 terminate-instances --instance-ids=${instance_id}
-  log ${BLUE} "----------------------------------------------------------------------"
+  echo "----------------------------------------------------------------------"
 }
 
 cycle_nodes() {
@@ -121,7 +119,7 @@ cycle_nodes() {
   count=${asg_count}
   while [[ ${count} -lt $(( ${asg_count} * 2)) ]]
   do
-    log ${BLUE} "${count}/$(( ${asg_count} * 2)) ready ${role}s"
+    echo "${count}/$(( ${asg_count} * 2)) ready ${role}s"
     sleep 8
     count=$(kubectl --context=${KUBE_CONTEXT} get node -lrole=${role} | grep -v NotReady | tail -n +2 | wc -l)
   done

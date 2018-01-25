@@ -53,7 +53,7 @@ deps="
   aws
 "
 
-missing_deps=
+missing_deps=""
 for d in ${deps}; do
   if ! command -v ${d} &> /dev/null; then
     missing_deps+="${d} "
@@ -77,7 +77,7 @@ aws_opts=
 if [[ -n "${aws_profile}" ]]; then
   if aws configure list --profile ${aws_profile} &> /dev/null; then
     aws_opts="--profile=${aws_profile}"
-    aws ${aws_opts} iam get-user >/dev/null || exit 1
+    aws ${aws_opts} iam get-user &>/dev/null || exit 1
   else
     echo "Invalid profile: ${aws_profile}"
     exit 1
@@ -94,7 +94,7 @@ handle_registry() {
       | awk '{print $1}')
     kubectl ${kube_opts} delete pod ${registry_pod}
 
-    until kubectl ${kube_opts} get pod | grep docker-registry | grep Running; do
+    until kubectl ${kube_opts} get pod | grep docker-registry | grep Running &> /dev/null; do
       kubectl ${kube_opts} get pod | grep docker-registry
     done
   fi
@@ -158,8 +158,8 @@ cycle_nodes() {
   fi
 
   # - drain/terminate labelled masters (sequentially)
-  local old_nodes=$(kubectl --context=${kube_context} get nodes -l role=${role},retiring=${retire_time} -o json | jq -r '.items[].metadata.name')
-  for old_node in ${old_nodes}; do
+  local old_nodes=$(kubectl --context="${kube_context}" get nodes -l role="${role}",retiring="${retire_time}" -o json | jq -r '.items[].metadata.name')
+  for old_node in "${old_nodes}"; do
     kill_node ${old_node}
   done
 

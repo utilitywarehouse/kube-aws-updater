@@ -26,26 +26,30 @@ aws_profile=''
 role=''
 registry_flag=''
 resume=''
+timeout=600
 
 usage() {
   cat <<EOF
 Usage: $0 -c <kube_context> -p <aws_profile> -s [retire_time_label] -r [role]
-        [-e] [-s]
+        [-e] [-s] -t [timeout]
 
   -s    Resume node rolling. Argument is retire_time label. If set, -r [role]
         must also be set
   -e    Registry flag - set if cluster contains docker registry and
         needs to be moved prior to rest of the pods
+  -t    Node drain timeout. How long to wait for the node to drain before
+        shutting it down (in seconds, default 600s)
 EOF
 }
 
-while getopts 'c:p:r:ehs:' flag; do
+while getopts 'c:p:r:ehs:t:' flag; do
   case "${flag}" in
     c) kube_context="${OPTARG}" ;;
     p) aws_profile="${OPTARG}" ;;
     r) role="${OPTARG}" ;;
     e) registry_flag='true' ;;
     s) resume="${OPTARG}" ;;
+    t) timeout="${OPTARG}" ;;
     h) usage && exit 0 ;;
     *) echo "Unexpected option ${flag}" && usage && exit 1 ;;
   esac
@@ -130,7 +134,8 @@ kill_node() {
 
   echo "---------- ${node} ----------"
   echo "draining ${node}..."
-  time timeout 600 kubectl --context=${kube_context} drain ${node} --ignore-daemonsets --force --delete-local-data || echo "draining failed (operator eviction or timeout [10m]), proceeding with shutdown"
+  time timeout ${timeout} kubectl --context=${kube_context} drain ${node} --ignore-daemonsets --force --delete-local-data \
+    || echo "draining failed (operator eviction or timeout [${timeout}s]), proceeding with shutdown"
   local instance_id=$(aws ${aws_opts} --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${node}" \
     | jq -r '.Reservations[].Instances[].InstanceId')
   echo "terminating ${node} with instance-id ${instance_id}"

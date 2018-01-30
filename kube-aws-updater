@@ -31,7 +31,7 @@ timeout=600
 usage() {
   cat <<EOF
 Usage: $0 -c <kube_context> -p <aws_profile> -s [retire_time_label] -r [role]
-        [-e] [-s] -t [timeout]
+        [-e] -t [timeout]
 
   -s    Resume node rolling. Argument is retire_time label. If set, -r [role]
         must also be set

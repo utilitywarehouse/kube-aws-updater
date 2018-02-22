@@ -226,3 +226,5 @@ else
   update master
   update worker
 fi
+
+echo "Successful run"

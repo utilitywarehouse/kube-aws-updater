@@ -122,7 +122,7 @@ label_for_cycling() {
   local role=$1
   local nodes=$(kubectl --context=${kube_context} get nodes -l role=${role} -o json | jq -r '.items[].metadata.name')
   echo "${kube_context} :: $(echo "${nodes}" | wc -l) ${role}s"
-  echo "Labelling ${role}s for retirement..."
+  echo "labelling ${role}s for retirement..."
   for node in ${nodes}; do
     kubectl --context=${kube_context} label node ${node} retiring=${retire_time} --overwrite=true
     kubectl --context=${kube_context} cordon ${node}
@@ -151,7 +151,7 @@ kill_node() {
   echo "terminating ${node} with instance-id ${instance_id}"
   aws ${aws_opts} ec2 terminate-instances --instance-ids=${instance_id}
   if [[ ${failDrain} == true ]]; then
-    echo "Error on drain, terminating and sleeping ${timeout} seconds"
+    echo "error on drain, terminating and sleeping ${timeout} seconds"
     sleep ${timeout}
   fi
 }

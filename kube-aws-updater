@@ -129,9 +129,17 @@ label_for_cycling() {
   done
 }
 
+delete_pods() {
+  local node=$1
+
+  kubectl --context=${kube_context} get pod --all-namespaces \
+    -o jsonpath='{range .items[?(.spec.nodeName=="'${node}'")]}{@.metadata.namespace} {.metadata.name} {end}' |\
+    xargs -n2 |\
+    xargs -I % sh -c "kubectl --context=${kube_context} delete pods -n=%"
+}
+
 kill_node() {
   local node=$1
-  local failDrain=false
 
   set +e
   time timeout ${timeout} kubectl --context=${kube_context} drain ${node} --ignore-daemonsets --force --delete-local-data
@@ -141,19 +149,16 @@ kill_node() {
     echo "drained sucessfully"
   elif [[ ${rc} == 124 ]]; then
     echo "timeout of ${timeout} seconds has been reached, continuing..."
+    delete_pods ${node}
   else
     echo "kubectl drain exit error: ${rc}"
-    failDrain=true
+    delete_pods ${node}
   fi
 
   local instance_id=$(aws ${aws_opts} --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${node}" \
     | jq -r '.Reservations[].Instances[].InstanceId')
   echo "terminating ${node} with instance-id ${instance_id}"
   aws ${aws_opts} ec2 terminate-instances --instance-ids=${instance_id}
-  if [[ ${failDrain} == true ]]; then
-    echo "error on drain, terminating and sleeping ${timeout} seconds"
-    sleep ${timeout}
-  fi
 }
 
 cycle_nodes() {

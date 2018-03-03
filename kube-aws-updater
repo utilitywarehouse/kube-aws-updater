@@ -155,8 +155,8 @@ kill_node() {
     delete_pods ${node}
   fi
 
-  local instance_id=$(aws ${aws_opts} --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${node}" \
-    | jq -r '.Reservations[].Instances[].InstanceId')
+  local instance_id=$(aws ${aws_opts} --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${node}" |\
+    jq -r '.Reservations[].Instances[].InstanceId')
   echo "terminating ${node} with instance-id ${instance_id}"
   aws ${aws_opts} ec2 terminate-instances --instance-ids=${instance_id}
 }
@@ -166,23 +166,27 @@ cycle_nodes() {
 
   # - double ASG size
   local instance_address=$(kubectl --context=${kube_context} get nodes -l role=${role},retiring=${retire_time} -o json | jq -r '.items[0].metadata.name')
-  local instance_id=$(aws ${aws_opts} --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${instance_address}" \
-    | jq -r '.Reservations[].Instances[].InstanceId')
-  local asg_name=$(aws ${aws_opts} --output=json autoscaling describe-auto-scaling-groups \
-    | jq -r '."AutoScalingGroups"[] | select(."Instances"[]."InstanceId"=="'${instance_id}'") | ."AutoScalingGroupName"')
-  local asg_count=$(aws ${aws_opts} --output=json autoscaling describe-auto-scaling-groups \
-    | jq -r '."AutoScalingGroups"[] | select(."Instances"[]."InstanceId"=="'${instance_id}'") | ."DesiredCapacity"')
-  aws ${aws_opts} --output=json autoscaling update-auto-scaling-group --auto-scaling-group-name "${asg_name}" --desired-capacity $(( ${asg_count} * 2)) --max-size $(( ${asg_count} * 2))
+  local instance_id=$(aws ${aws_opts} --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${instance_address}" |\
+    jq -r '.Reservations[].Instances[].InstanceId')
+  local asg_name=$(aws ${aws_opts} --output=json autoscaling describe-auto-scaling-groups |\
+    jq -r '."AutoScalingGroups"[] | select(."Instances"[]."InstanceId"=="'${instance_id}'") | ."AutoScalingGroupName"')
+  local asg_count=$(aws ${aws_opts} --output=json autoscaling describe-auto-scaling-groups |\
+    jq -r '."AutoScalingGroups"[] | select(."Instances"[]."InstanceId"=="'${instance_id}'") | ."DesiredCapacity"')
+
+  aws ${aws_opts} --output=json autoscaling update-auto-scaling-group \
+    --auto-scaling-group-name "${asg_name}" \
+    --desired-capacity $(( ${asg_count} * 2)) \
+    --max-size $(( ${asg_count} * 2))
 
   # - wait for 2x group
   local count=0
   while [[ ${count} -lt ${asg_count} ]]; do
     sleep 8
-    count=$(kubectl --context=${kube_context} get node -lrole=${role} -Lrole,retiring \
-      | grep -v ${retire_time} \
-      | grep -v NotReady \
-      | tail -n +2 \
-      | wc -l)
+    count=$(kubectl --context=${kube_context} get node -lrole=${role} -Lrole,retiring |\
+      grep -v ${retire_time} |\
+      grep -v NotReady |\
+      tail -n +2 |\
+      wc -l)
     echo "${count}/${asg_count} ready ${role}s"
   done
 

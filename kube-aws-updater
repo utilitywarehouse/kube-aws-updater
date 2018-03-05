@@ -192,6 +192,25 @@ cycle_nodes() {
   done
 
   # - stop ASG actions
+  ## auto-scaling processes:
+  # https://docs.aws.amazon.com/autoscaling/ec2/userguide/as-suspend-resume-processes.html#process-types
+  #
+  # - Launch
+  # - Terminate         # Do not suspend
+  # - HealthCheck       # Do not suspend
+  # - ReplaceUnhealthy
+  # - AZRebalance
+  # - AlarmNotification
+  # - ScheduledActions
+  # - AddToLoadBalancer
+  #
+  # Suspends processes on the autoscaling group. As we drain and terminate
+  # instances we don't want the ASG to spin up new ones as a replacement or to get
+  # back to the desired capacity.
+  #
+  # We do however want the ASG to detect that we are terminating instances so
+  # we want ASG to check the health of the instance and "Terminate" (remove from
+  # the group)
   aws ${aws_opts} --output=json autoscaling suspend-processes \
     --auto-scaling-group-name "${asg_name}" --scaling-processes \
     "Launch" \
@@ -220,16 +239,15 @@ cycle_nodes() {
   # sleep some time to allow ASG to catch and see the "Terminating" instance
   sleep 64
 
-  # wait for ASG to catch up and have no instances "Terminating"
+  # wait for ASG to catch up and have the desired number of instances
   set +e
-  local rc=1
-  while [[ ${rc} -ne 4 ]]; do
+  local ic=0
+  while [[ ${ic} -ne ${asg_count} ]]; do
     sleep 16
-    aws ${aws_opts} --output=json autoscaling describe-auto-scaling-groups \
+    ic=$(aws ${aws_opts} --output=json autoscaling describe-auto-scaling-groups \
       --auto-scaling-group-names "${asg_name}" |\
-      jq -e -r '."AutoScalingGroups"[0]."Instances"[] | select (."LifecycleState" == "Terminating")'
-    rc=$?
-    echo "waiting for terminating nodes: asg=\"${asg_name}\" rc=\"${rc}\""
+      jq -r -e '."AutoScalingGroups"[0]."Instances" | length')
+    echo "waiting for instances: asg=\"${asg_name}\" desired=\"${asg_count}\" actual=\"${ic}\""
   done
   set -e
 

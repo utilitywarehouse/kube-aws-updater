@@ -60,6 +60,7 @@ deps="
   jq
   kubectl
   aws
+  xargs
 "
 
 missing_deps=""
@@ -129,31 +130,36 @@ label_for_cycling() {
   done
 }
 
+delete_pods() {
+  local node=$1
+
+  kubectl --context=${kube_context} get pod --all-namespaces \
+    -o jsonpath='{range .items[?(.spec.nodeName=="'${node}'")]}{@.metadata.namespace} {.metadata.name} {end}' |\
+    xargs -n2 |\
+    xargs -I % sh -c "kubectl --context=${kube_context} delete pods -n=%"
+}
+
 kill_node() {
   local node=$1
-  local failDrain=false
 
   set +e
   time timeout ${timeout} kubectl --context=${kube_context} drain ${node} --ignore-daemonsets --force --delete-local-data
   local rc=$?
   set -e
-  if [[ ${rc} == 0 ]]; then
+  if [[ ${rc} -eq 0 ]]; then
     echo "drained sucessfully"
-  elif [[ ${rc} == 124 ]]; then
+  elif [[ ${rc} -eq 124 ]]; then
     echo "timeout of ${timeout} seconds has been reached, continuing..."
+    delete_pods ${node}
   else
     echo "kubectl drain exit error: ${rc}"
-    failDrain=true
+    delete_pods ${node}
   fi
 
-  local instance_id=$(aws ${aws_opts} --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${node}" \
-    | jq -r '.Reservations[].Instances[].InstanceId')
+  local instance_id=$(aws ${aws_opts} --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${node}" |\
+    jq -r '.Reservations[].Instances[].InstanceId')
   echo "terminating ${node} with instance-id ${instance_id}"
   aws ${aws_opts} ec2 terminate-instances --instance-ids=${instance_id}
-  if [[ ${failDrain} == true ]]; then
-    echo "error on drain, terminating and sleeping ${timeout} seconds"
-    sleep ${timeout}
-  fi
 }
 
 cycle_nodes() {
@@ -161,45 +167,99 @@ cycle_nodes() {
 
   # - double ASG size
   local instance_address=$(kubectl --context=${kube_context} get nodes -l role=${role},retiring=${retire_time} -o json | jq -r '.items[0].metadata.name')
-  local instance_id=$(aws ${aws_opts} --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${instance_address}" \
-    | jq -r '.Reservations[].Instances[].InstanceId')
-  local asg_name=$(aws ${aws_opts} --output=json autoscaling describe-auto-scaling-groups \
-    | jq -r '."AutoScalingGroups"[] | select(."Instances"[]."InstanceId"=="'${instance_id}'") | ."AutoScalingGroupName"')
-  local asg_count=$(aws ${aws_opts} --output=json autoscaling describe-auto-scaling-groups \
-    | jq -r '."AutoScalingGroups"[] | select(."Instances"[]."InstanceId"=="'${instance_id}'") | ."DesiredCapacity"')
-  aws ${aws_opts} --output=json autoscaling update-auto-scaling-group --auto-scaling-group-name "${asg_name}" --desired-capacity $(( ${asg_count} * 2)) --max-size $(( ${asg_count} * 2))
+  local instance_id=$(aws ${aws_opts} --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${instance_address}" |\
+    jq -r '.Reservations[].Instances[].InstanceId')
+  local asg_name=$(aws ${aws_opts} --output=json autoscaling describe-auto-scaling-groups |\
+    jq -r '."AutoScalingGroups"[] | select(."Instances"[]."InstanceId"=="'${instance_id}'") | ."AutoScalingGroupName"')
+  local asg_count=$(aws ${aws_opts} --output=json autoscaling describe-auto-scaling-groups |\
+    jq -r '."AutoScalingGroups"[] | select(."Instances"[]."InstanceId"=="'${instance_id}'") | ."DesiredCapacity"')
+
+  aws ${aws_opts} --output=json autoscaling update-auto-scaling-group \
+    --auto-scaling-group-name "${asg_name}" \
+    --desired-capacity $(( ${asg_count} * 2)) \
+    --max-size $(( ${asg_count} * 2))
 
   # - wait for 2x group
   local count=0
   while [[ ${count} -lt ${asg_count} ]]; do
     sleep 8
-    count=$(kubectl --context=${kube_context} get node -lrole=${role} -Lrole,retiring \
-      | grep -v ${retire_time} \
-      | grep -v NotReady \
-      | tail -n +2 \
-      | wc -l)
+    count=$(kubectl --context=${kube_context} get node -lrole=${role} -Lrole,retiring |\
+      grep -v ${retire_time} |\
+      grep -v NotReady |\
+      tail -n +2 |\
+      wc -l)
     echo "${count}/${asg_count} ready ${role}s"
   done
 
   # - stop ASG actions
-  aws ${aws_opts} --output=json autoscaling suspend-processes --auto-scaling-group-name "${asg_name}"
+  ## auto-scaling processes:
+  # https://docs.aws.amazon.com/autoscaling/ec2/userguide/as-suspend-resume-processes.html#process-types
+  #
+  # - Launch
+  # - Terminate         # Do not suspend
+  # - HealthCheck       # Do not suspend
+  # - ReplaceUnhealthy
+  # - AZRebalance
+  # - AlarmNotification
+  # - ScheduledActions
+  # - AddToLoadBalancer
+  #
+  # Suspends processes on the autoscaling group. As we drain and terminate
+  # instances we don't want the ASG to spin up new ones as a replacement or to get
+  # back to the desired capacity.
+  #
+  # We do however want the ASG to detect that we are terminating instances so
+  # we want ASG to check the health of the instance and "Terminate" (remove from
+  # the group)
+  aws ${aws_opts} --output=json autoscaling suspend-processes \
+    --auto-scaling-group-name "${asg_name}" --scaling-processes \
+    "Launch" \
+    "ReplaceUnhealthy" \
+    "AZRebalance" \
+    "AlarmNotification" \
+    "ScheduledActions" \
+    "AddToLoadBalancer"
 
   ### - move the registry
   if [[ "${role}" == "worker" ]]; then
     handle_registry
   fi
 
-  # - drain/terminate labelled masters (sequentially)
+  # - drain/terminate labelled nodes (sequentially)
   local old_nodes=$(kubectl --context="${kube_context}" get nodes -l role="${role}",retiring="${retire_time}" -o json | jq -r '.items[].metadata.name')
   for old_node in ${old_nodes}; do
     kill_node ${old_node}
   done
 
   # - resize ASG to original size
-  aws ${aws_opts} --output=json autoscaling update-auto-scaling-group --auto-scaling-group-name "${asg_name}" --desired-capacity ${asg_count} --max-size ${asg_count}
+  aws ${aws_opts} --output=json autoscaling update-auto-scaling-group \
+    --auto-scaling-group-name "${asg_name}" --desired-capacity ${asg_count} \
+    --max-size ${asg_count}
+
+  # sleep some time to allow ASG to catch and see the "Terminating" instance
+  sleep 64
+
+  # wait for ASG to catch up and have the desired number of instances
+  set +e
+  local ic=0
+  while [[ ${ic} -ne ${asg_count} ]]; do
+    sleep 16
+    ic=$(aws ${aws_opts} --output=json autoscaling describe-auto-scaling-groups \
+      --auto-scaling-group-names "${asg_name}" |\
+      jq -r -e '."AutoScalingGroups"[0]."Instances" | length')
+    echo "waiting for instances: asg=\"${asg_name}\" desired=\"${asg_count}\" actual=\"${ic}\""
+  done
+  set -e
 
   # - re-enable ASG actions
-  aws ${aws_opts} --output=json autoscaling resume-processes --auto-scaling-group-name "${asg_name}"
+  aws ${aws_opts} --output=json autoscaling resume-processes \
+    --auto-scaling-group-name "${asg_name}" --scaling-processes \
+    "Launch" \
+    "ReplaceUnhealthy" \
+    "AZRebalance" \
+    "AlarmNotification" \
+    "ScheduledActions" \
+    "AddToLoadBalancer"
 }
 
 update() {

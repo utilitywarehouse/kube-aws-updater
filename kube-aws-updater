@@ -103,20 +103,18 @@ fi
 echo "kube cluster :: ${kube_context}"
 
 handle_registry() {
-  if [[ "${registry_flag}" == "true" ]]; then
-    local ns="sys-registry"
-    local pod_pattern="docker-registry"
-    local kube_opts="--context=${kube_context} -n${ns}"
-    local registry_pod=$(kubectl ${kube_opts} get pod \
-      | grep ${pod_pattern} \
-      | awk '{print $1}')
-    kubectl ${kube_opts} delete pod ${registry_pod}
+  local ns="sys-registry"
+  local pod_pattern="docker-registry"
+  local kube_opts="--context=${kube_context} -n${ns}"
+  local registry_pod=$(kubectl ${kube_opts} get pod \
+    | grep ${pod_pattern} \
+    | awk '{print $1}')
+  kubectl ${kube_opts} delete pod ${registry_pod}
 
-    until kubectl ${kube_opts} get pod | grep ${pod_pattern} | grep Running &> /dev/null; do
-      sleep 4
-      kubectl ${kube_opts} get pod | grep ${pod_pattern}
-    done
-  fi
+  until kubectl ${kube_opts} get pod | grep ${pod_pattern} | grep Running &> /dev/null; do
+    sleep 4
+    kubectl ${kube_opts} get pod | grep ${pod_pattern}
+  done
 }
 
 label_for_cycling() {
@@ -221,7 +219,10 @@ cycle_nodes() {
     "AddToLoadBalancer"
 
   ### - move the registry
-  if [[ "${role}" == "worker" ]]; then
+  ### if we are updating a cluster that contains a container image resgistry,
+  ### terminate registry pods first and wait for them to become available
+  ### before draining the rest of cluster.
+  if [[ "${role}" == "worker" && "${registry_flag}" == "true" ]]; then
     handle_registry
   fi
 

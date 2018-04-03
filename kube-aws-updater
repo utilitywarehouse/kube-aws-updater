@@ -202,7 +202,7 @@ cycle_nodes() {
   # - wait for 2x group
   local count=0
   while [[ ${count} -lt ${asg_count} ]]; do
-    sleep 8
+    sleep 32
     count=$(retry kubectl --context=${kube_context} get node -lrole=${role} -Lrole,retiring |\
       grep -v ${retire_time} |\
       grep -v NotReady |\
@@ -266,7 +266,7 @@ cycle_nodes() {
   set +e
   local ic=0
   while [[ ${ic} -ne ${asg_count} ]]; do
-    sleep 16
+    sleep 32
     ic=$(retry aws ${aws_opts} --output=json autoscaling describe-auto-scaling-groups \
       --auto-scaling-group-names "${asg_name}" |\
       jq -r -e '."AutoScalingGroups"[0]."Instances" | length')

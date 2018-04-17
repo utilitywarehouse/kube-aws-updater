@@ -62,6 +62,7 @@ deps="
   jq
   kubectl
   aws
+  timeout
   xargs
 "
 

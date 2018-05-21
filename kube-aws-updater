@@ -10,8 +10,6 @@
 # - double ASG size
 # - wait for 2x group
 # - stop ASG actions
-#   * delete docker-reigistry pod
-#   * wait for docker-registry to be up
 # - drain/terminate labelled nodes (sequentially)
 # - resize ASG to original size
 # - re-enable ASG actions
@@ -26,19 +24,16 @@ readonly retire_time=$(date +"%Y-%m-%dT%H-%M-%SZ")
 kube_context=''
 aws_profile=''
 role=''
-registry_flag=''
 resume=''
 timeout=600
 
 usage() {
   cat <<EOF
 Usage: $0 -c <kube_context> -p <aws_profile> -s [retire_time_label] -r [role]
-        [-e] -t [timeout]
+        -t [timeout]
 
   -s    Resume node rolling. Argument is retire_time label. If set, -r [role]
         must also be set
-  -e    Registry flag - set if cluster contains docker registry and
-        needs to be moved prior to rest of the pods
   -t    Node drain timeout. How long to wait for the node to drain before
         shutting it down (in seconds, default 600s)
 EOF
@@ -49,7 +44,6 @@ while getopts 'c:p:r:ehs:t:' flag; do
     c) kube_context="${OPTARG}" ;;
     p) aws_profile="${OPTARG}" ;;
     r) role="${OPTARG}" ;;
-    e) registry_flag='true' ;;
     s) resume="${OPTARG}" ;;
     t) timeout="${OPTARG}" ;;
     h) usage && exit 0 ;;
@@ -122,21 +116,6 @@ function retry() {
         fail "the command has failed after $n attempts."
       fi
     }
-  done
-}
-
-migrate_registry() {
-  local ns="sys-registry"
-  local pod_pattern="docker-registry"
-  local kube_opts="--context=${kube_context} -n${ns}"
-  local registry_pod=$(retry kubectl ${kube_opts} get pod |\
-    grep ${pod_pattern} |\
-    awk '{print $1}')
-  retry kubectl ${kube_opts} delete pod ${registry_pod}
-
-  until kubectl ${kube_opts} get pod | grep ${pod_pattern} | grep Running &> /dev/null; do
-    sleep 4
-    retry kubectl ${kube_opts} get pod | grep ${pod_pattern}
   done
 }
 
@@ -240,14 +219,6 @@ cycle_nodes() {
     "AlarmNotification" \
     "ScheduledActions" \
     "AddToLoadBalancer"
-
-  ### - move the registry
-  ### if we are updating a cluster that contains a container image resgistry,
-  ### terminate registry pods first and wait for them to become available
-  ### before draining the rest of cluster.
-  if [[ "${role}" == "worker" && "${registry_flag}" == "true" ]]; then
-    migrate_registry
-  fi
 
   # - drain/terminate labelled nodes (sequentially)
   local old_nodes=$(retry kubectl --context="${kube_context}" get nodes -l role="${role}",retiring="${retire_time}" -o json | jq -r '.items[].metadata.name')

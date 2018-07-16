@@ -90,7 +90,7 @@ aws_opts=""
 if [[ -n "${aws_profile}" ]]; then
   if aws configure list --profile ${aws_profile} &> /dev/null; then
     aws_opts="--profile=${aws_profile}"
-    aws ${aws_opts} iam get-user &>/dev/null || exit 1
+    aws ${aws_opts} iam get-user &>/dev/null || echo "failed to get iam user for ${aws_opts}"; exit 1
   else
     echo "Invalid profile: ${aws_profile}"
     exit 1

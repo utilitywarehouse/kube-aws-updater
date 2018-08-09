@@ -35,7 +35,7 @@ Usage: $0 -c <kube_context> -p <aws_profile> -s [retire_time_label] -r [role]
   -s    Resume node rolling. Argument is retire_time label. If set, -r [role]
         must also be set
   -t    Node drain timeout. How long to wait for the node to drain before
-        shutting it down (in seconds, default 600s)
+        shutting it down (in seconds, default ${timeout}s)
 EOF
 }
 
@@ -130,15 +130,6 @@ label_for_cycling() {
   done
 }
 
-delete_pods() {
-  local node=$1
-
-  retry kubectl --context=${kube_context} get pod --all-namespaces \
-    -o jsonpath='{range .items[?(.spec.nodeName=="'${node}'")]}{@.metadata.namespace} {.metadata.name} {end}' |\
-    xargs -n2 |\
-    xargs -I % sh -c "kubectl --context=${kube_context} delete pods -n=%"
-}
-
 kill_node() {
   local node=$1
 
@@ -150,10 +141,8 @@ kill_node() {
     echo "drained successfully"
   elif [[ ${rc} -eq 124 ]]; then
     echo "timeout reached, continuing: timeout=${timeout}"
-    delete_pods ${node}
   else
-    echo "kubectl drain exit error: ${rc}"
-    delete_pods ${node}
+    echo "kubectl drain error: rc=${rc}"
   fi
 
   local instance_id=$(retry aws ${aws_opts} --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${node}" |\

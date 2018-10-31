@@ -41,7 +41,7 @@ Usage: $0 -c <kube_context> -p <aws_profile> -s [retire_time_label] -r [role]
   -t    Node drain timeout. How long to wait for the node to drain before
         shutting it down (in seconds, default ${timeout}s)
 EOF
-}
+} >&2
 
 while getopts 'c:p:r:hs:t:' flag; do
   case "${flag}" in

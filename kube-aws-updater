@@ -27,6 +27,10 @@ role=''
 resume=''
 timeout=300
 
+log() {
+  echo "[$(date +'%Y-%m-%dT%H:%M:%S')]: $@" >&2
+}
+
 usage() {
   cat <<EOF
 Usage: $0 -c <kube_context> -p <aws_profile> -s [retire_time_label] -r [role]
@@ -37,7 +41,7 @@ Usage: $0 -c <kube_context> -p <aws_profile> -s [retire_time_label] -r [role]
   -t    Node drain timeout. How long to wait for the node to drain before
         shutting it down (in seconds, default ${timeout}s)
 EOF
-}
+} >&2
 
 while getopts 'c:p:r:hs:t:' flag; do
   case "${flag}" in
@@ -47,7 +51,7 @@ while getopts 'c:p:r:hs:t:' flag; do
     s) resume="${OPTARG}" ;;
     t) timeout="${OPTARG}" ;;
     h) usage && exit 0 ;;
-    *) echo "Unexpected option: ${flag}" && usage && exit 1 ;;
+    *) log "Unexpected option: ${flag}" && usage && exit 1 ;;
   esac
 done
 
@@ -68,7 +72,7 @@ for d in ${deps}; do
 done
 
 if [[ -n "${missing_deps}" ]]; then
-  echo "Missing dependencies: ${missing_deps}"
+  log "Missing dependencies: ${missing_deps}"
   exit 1
 fi
 
@@ -81,7 +85,7 @@ if [[ -z "${kube_context}" ]]; then
 fi
 
 if [[ -n "${resume}" ]] && [[ -z "${role}" ]] ; then
-  echo "If you are resuming, you need to provide a role"
+  log "If you are resuming, you need to provide a role"
   usage
   exit 1
 fi
@@ -90,17 +94,12 @@ aws_opts=""
 if [[ -n "${aws_profile}" ]]; then
   if aws configure list --profile ${aws_profile} &> /dev/null; then
     aws_opts="--profile=${aws_profile}"
-    aws ${aws_opts} iam get-user &>/dev/null || (echo "failed to get iam user for ${aws_opts}"; exit 1)
+    aws ${aws_opts} iam get-user &>/dev/null || (log "failed to get iam user for ${aws_opts}"; exit 1)
   else
-    echo "Invalid profile: ${aws_profile}"
+    log "Invalid profile: ${aws_profile}"
     exit 1
   fi
 fi
-
-function fail() {
-  echo $1 >&2
-  exit 1
-}
 
 function retry() {
   local n=1
@@ -110,10 +109,11 @@ function retry() {
     "$@" && break || {
       if [[ $n -lt $max ]]; then
         ((n++))
-        echo "command failed: attempt=$n max=$max"
+        log "command failed: attempt=$n max=$max"
         sleep $delay;
       else
-        fail "the command has failed after $n attempts."
+        log "the command has failed after $n attempts"
+        exit 1
       fi
     }
   done
@@ -122,8 +122,8 @@ function retry() {
 label_for_cycling() {
   local role=$1
   local nodes=$(retry kubectl --context=${kube_context} get nodes -l role=${role} -o json | jq -r '.items[].metadata.name')
-  echo "${kube_context}: nodes=$(echo "${nodes}" | wc -l) role=${role}"
-  echo "labelling for retirement: role=${role}"
+  log "${kube_context}: nodes=$(log "${nodes}" | wc -l) role=${role}"
+  log "labelling for retirement: role=${role}"
   for node in ${nodes}; do
     retry kubectl --context=${kube_context} label node ${node} retiring=${retire_time} --overwrite=true
     retry kubectl --context=${kube_context} cordon ${node}
@@ -138,16 +138,16 @@ kill_node() {
   local rc=$?
   set -e
   if [[ ${rc} -eq 0 ]]; then
-    echo "drained successfully"
+    log "drained successfully"
   elif [[ ${rc} -eq 124 ]]; then
-    echo "timeout reached, continuing: timeout=${timeout}"
+    log "timeout reached, continuing: timeout=${timeout}"
   else
-    echo "kubectl drain error: rc=${rc}"
+    log "kubectl drain error: rc=${rc}"
   fi
 
   local instance_id=$(retry aws ${aws_opts} --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${node}" |\
     jq -r '.Reservations[].Instances[].InstanceId')
-  echo "aws terminating: node=${node} instance-id=${instance_id}"
+  log "aws terminating: node=${node} instance-id=${instance_id}"
   retry aws ${aws_opts} ec2 terminate-instances --instance-ids=${instance_id}
 }
 
@@ -177,7 +177,7 @@ cycle_nodes() {
       grep -v NotReady |\
       tail -n +2 |\
       wc -l)
-    echo "waiting for new nodes: actual=${count} expected=${asg_count} asg=\"${asg_name}\""
+    log "waiting for new nodes: actual=${count} expected=${asg_count} asg=\"${asg_name}\""
   done
 
   # - stop ASG actions
@@ -231,7 +231,7 @@ cycle_nodes() {
     ic=$(retry aws ${aws_opts} --output=json autoscaling describe-auto-scaling-groups \
       --auto-scaling-group-names "${asg_name}" |\
       jq -r -e '."AutoScalingGroups"[0]."Instances" | length')
-    echo "waiting ASG to scale down: actual=${ic} desired=${asg_count} asg=\"${asg_name}\""
+    log "waiting ASG to scale down: actual=${ic} desired=${asg_count} asg=\"${asg_name}\""
   done
   set -e
 
@@ -259,7 +259,7 @@ resume() {
   done
 }
 
-echo "kube cluster: ${kube_context}"
+log "kube cluster: ${kube_context}"
 
 if [[ -n "${resume}" ]]; then
   resume
@@ -273,4 +273,4 @@ else
   update worker
 fi
 
-echo "run: result=\"success\""
+log "run: result=\"success\""

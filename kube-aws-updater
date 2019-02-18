@@ -191,7 +191,7 @@ cycle_nodes() {
   # - AZRebalance
   # - AlarmNotification
   # - ScheduledActions
-  # - AddToLoadBalancer
+  # - AddToLoadBalancer # Do not suspend
   #
   # Suspends processes on the autoscaling group. As we drain and terminate
   # instances we don't want the ASG to spin up new ones as a replacement or to get
@@ -206,8 +206,7 @@ cycle_nodes() {
     "ReplaceUnhealthy" \
     "AZRebalance" \
     "AlarmNotification" \
-    "ScheduledActions" \
-    "AddToLoadBalancer"
+    "ScheduledActions"
 
   # - drain/terminate labelled nodes (sequentially)
   local old_nodes=$(retry kubectl --context="${kube_context}" get nodes -l role="${role}",retiring="${retire_time}" -o json | jq -r '.items[].metadata.name')
@@ -242,8 +241,7 @@ cycle_nodes() {
     "ReplaceUnhealthy" \
     "AZRebalance" \
     "AlarmNotification" \
-    "ScheduledActions" \
-    "AddToLoadBalancer"
+    "ScheduledActions"
 }
 
 update() {

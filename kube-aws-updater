@@ -28,7 +28,7 @@ resume=''
 timeout=600
 
 log() {
-  echo "[$(date +'%Y-%m-%dT%H:%M:%S')]: $@" >&2
+  echo -e "[$(date +'%Y-%m-%dT%H:%M:%S')]: $@" >&2
 }
 
 usage() {
@@ -208,6 +208,23 @@ cycle_nodes() {
     "AZRebalance" \
     "AlarmNotification" \
     "ScheduledActions"
+
+  # check that nodes are balanced across three AZs
+  local nodes_per_zone
+  nodes_per_zone=$(kubectl --context "${kube_context}" get nodes -lrole="${role}" --no-headers -ocustom-columns=':.metadata.labels.failure-domain\.beta\.kubernetes\.io\/zone' |\
+      sort |\
+      uniq -c)
+  local npz
+  readarray -t npz < <(echo "${nodes_per_zone}" | awk '{print $1}')
+  if [ "${#npz[@]}" -ne 3 ]; then
+      log "Expected nodes across three zones. Node distribution:\n$nodes_per_zone\nCannot proceed, exiting"
+      exit 1
+  fi
+  # shellcheck disable=SC2252
+  if [ "${npz[0]}" != "${npz[1]}" ] || [ "${npz[0]}" != "${npz[2]}" ] || [ "${npz[1]}" != "${npz[2]}" ]; then
+      log "Nodes are not perfectly balanced across zones. Node distribution:\n$nodes_per_zone\nCannot proceed, exiting"
+      exit 1
+  fi
 
   # - drain/terminate labelled nodes (sequentially)
   local old_nodes=$(retry kubectl --context="${kube_context}" get nodes -l role="${role}",retiring="${retire_time}" -o json | jq -r '.items[].metadata.name')

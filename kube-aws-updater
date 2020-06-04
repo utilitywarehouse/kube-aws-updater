@@ -18,15 +18,6 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-readonly retire_time=$(date +"%Y-%m-%dT%H-%M-%SZ")
-
-# flags
-kube_context=''
-aws_profile=''
-role=''
-resume=''
-timeout=600
-
 log() {
   echo -e "[$(date +'%Y-%m-%dT%H:%M:%S')]: $@" >&2
 }
@@ -43,65 +34,66 @@ Usage: $0 -c <kube_context> -p <aws_profile> -s [retire_time_label] -r [role]
 EOF
 } >&2
 
-while getopts 'c:p:r:hs:t:' flag; do
-  case "${flag}" in
-    c) kube_context="${OPTARG}" ;;
-    p) aws_profile="${OPTARG}" ;;
-    r) role="${OPTARG}" ;;
-    s) resume="${OPTARG}" ;;
-    t) timeout="${OPTARG}" ;;
-    h) usage && exit 0 ;;
-    *) log "Unexpected option: ${flag}" && usage && exit 1 ;;
-  esac
-done
+parse_opts() {
+  readonly retire_time=$(date +"%Y-%m-%dT%H-%M-%SZ")
 
-### Deps
-deps="
-  jq
-  kubectl
-  aws
-  timeout
-  xargs
-  readarray
-"
+  # flags
+  kube_context=''
+  aws_profile=''
+  role=''
+  resume=''
+  timeout=600
 
-missing_deps=""
-for d in ${deps}; do
-  if ! command -v ${d} &> /dev/null; then
-    missing_deps+="${d} "
-  fi
-done
+  while getopts 'c:p:r:hs:t:' flag; do
+    case "${flag}" in
+      c) kube_context="${OPTARG}" ;;
+      p) aws_profile="${OPTARG}" ;;
+      r) role="${OPTARG}" ;;
+      s) resume="${OPTARG}" ;;
+      t) timeout="${OPTARG}" ;;
+      h) usage && exit 0 ;;
+      *) log "Unexpected option: ${flag}" && usage && exit 1 ;;
+    esac
+  done
 
-if [[ -n "${missing_deps}" ]]; then
-  log "Missing dependencies: ${missing_deps}"
-  exit 1
-fi
-
-###
-
-### Validation
-if [[ -z "${kube_context}" ]]; then
-  usage
-  exit 1
-fi
-
-if [[ -n "${resume}" ]] && [[ -z "${role}" ]] ; then
-  log "If you are resuming, you need to provide a role"
-  usage
-  exit 1
-fi
-
-aws_opts=""
-if [[ -n "${aws_profile}" ]]; then
-  if aws configure list --profile ${aws_profile} &> /dev/null; then
-    aws_opts="--profile=${aws_profile}"
-    aws ${aws_opts} sts get-caller-identity &>/dev/null \
-      || (log "failed to get-caller-identity profile=${aws_profile}"; exit 1)
-  else
-    log "Invalid profile: ${aws_profile}"
+  ### Validation
+  if [[ -z "${kube_context}" ]]; then
+    usage
     exit 1
   fi
-fi
+
+  if [[ -n "${resume}" ]] && [[ -z "${role}" ]] ; then
+    log "If you are resuming, you need to provide a role"
+    usage
+    exit 1
+  fi
+
+  aws_opts=""
+  if [[ -n "${aws_profile}" ]]; then
+    if aws configure list --profile "${aws_profile}" &> /dev/null; then
+      aws_opts="--profile=${aws_profile}"
+      aws "${aws_opts}" sts get-caller-identity &>/dev/null \
+        || (log "failed to get-caller-identity profile=${aws_profile}"; exit 1)
+    else
+      log "Invalid profile: ${aws_profile}"
+      exit 1
+    fi
+  fi
+}
+
+checkdeps() {
+  local missing_deps=""
+  for d in "${@}"; do
+    if ! command -v "${d}" &> /dev/null; then
+      missing_deps+="${d} "
+    fi
+  done
+
+  if [[ -n "${missing_deps}" ]]; then
+    log "Missing dependencies: ${missing_deps}"
+    exit 1
+  fi
+}
 
 function retry() {
   local n=1
@@ -275,6 +267,9 @@ resume() {
     kill_node ${old_node}
   done
 }
+
+checkdeps jq kubectl aws timeout xargs readarray
+parse_opts "${@}"
 
 log "kube cluster: ${kube_context}"
 

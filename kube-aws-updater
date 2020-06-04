@@ -19,7 +19,7 @@ set -o nounset
 set -o pipefail
 
 log() {
-  echo -e "[$(date +'%Y-%m-%dT%H:%M:%S')]: $@" >&2
+  echo -e "[$(date +'%Y-%m-%dT%H:%M:%S')]: ${*}" >&2
 }
 
 usage() {
@@ -71,8 +71,8 @@ parse_opts() {
   aws_opts=""
   if [[ -n "${aws_profile}" ]]; then
     if aws configure list --profile "${aws_profile}" &> /dev/null; then
-      aws_opts="--profile=${aws_profile}"
-      aws "${aws_opts}" sts get-caller-identity &>/dev/null \
+      aws_opts=("--profile=${aws_profile}")
+      aws "${aws_opts[@]}" sts get-caller-identity &>/dev/null \
         || (log "failed to get-caller-identity profile=${aws_profile}"; exit 1)
     else
       log "Invalid profile: ${aws_profile}"
@@ -100,7 +100,9 @@ function retry() {
   local max=12
   local delay=8
   while true; do
-    "$@" && break || {
+    if "$@"; then
+      break
+    else
       if [[ $n -lt $max ]]; then
         ((n++))
         log "command failed: attempt=$n max=$max"
@@ -109,18 +111,19 @@ function retry() {
         log "the command has failed after $n attempts"
         exit 1
       fi
-    }
+    fi
   done
 }
 
 label_for_cycling() {
   local role=$1
-  local nodes=$(retry kubectl --context=${kube_context} get nodes -l role=${role} -o json | jq -r '.items[].metadata.name')
+  local nodes
+  nodes=$(retry kubectl --context="${kube_context}" get nodes -l "role=${role}" -o json | jq -r '.items[].metadata.name')
   log "${kube_context}: nodes=$(log "${nodes}" | wc -l) role=${role}"
   log "labelling for retirement: role=${role}"
   for node in ${nodes}; do
-    retry kubectl --context=${kube_context} label node ${node} retiring=${retire_time} --overwrite=true
-    retry kubectl --context=${kube_context} cordon ${node}
+    retry kubectl --context="${kube_context}" label node "${node}" "retiring=${retire_time}" --overwrite=true
+    retry kubectl --context="${kube_context}" cordon "${node}"
   done
 }
 
@@ -128,7 +131,7 @@ kill_node() {
   local node=$1
 
   set +e
-  time timeout ${timeout} kubectl --context=${kube_context} drain ${node} --ignore-daemonsets --force --delete-local-data
+  time timeout "${timeout}" kubectl --context="${kube_context}" drain "${node}" --ignore-daemonsets --force --delete-local-data
   local rc=$?
   set -e
   if [[ ${rc} -eq 0 ]]; then
@@ -139,35 +142,40 @@ kill_node() {
     log "kubectl drain error: rc=${rc}"
   fi
 
-  local instance_id=$(retry aws ${aws_opts} --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${node}" |\
+  local instance_id
+  instance_id=$(retry aws "${aws_opts[@]}" --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${node}" |\
     jq -r '.Reservations[].Instances[].InstanceId')
   log "aws terminating: node=${node} instance-id=${instance_id}"
-  retry aws ${aws_opts} ec2 terminate-instances --instance-ids=${instance_id}
+  retry aws "${aws_opts[@]}" ec2 terminate-instances --instance-ids="${instance_id}"
 }
 
 cycle_nodes() {
   local role=$1
 
   # - double ASG size
-  local instance_address=$(retry kubectl --context=${kube_context} get nodes -l role=${role},retiring=${retire_time} -o json | jq -r '.items[0].metadata.name')
-  local instance_id=$(retry aws ${aws_opts} --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${instance_address}" |\
+  local instance_address
+  instance_address=$(retry kubectl --context="${kube_context}" get nodes -l "role=${role},retiring=${retire_time}" -o json | jq -r '.items[0].metadata.name')
+  local instance_id
+  instance_id=$(retry aws "${aws_opts[@]}" --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${instance_address}" |\
     jq -r '.Reservations[].Instances[].InstanceId')
-  local asg_name=$(retry aws ${aws_opts} --output=json autoscaling describe-auto-scaling-groups |\
-    jq -r '."AutoScalingGroups"[] | select(."Instances"[]."InstanceId"=="'${instance_id}'") | ."AutoScalingGroupName"')
-  local asg_count=$(retry aws ${aws_opts} --output=json autoscaling describe-auto-scaling-groups |\
-    jq -r '."AutoScalingGroups"[] | select(."Instances"[]."InstanceId"=="'${instance_id}'") | ."DesiredCapacity"')
+  local asg_name
+  asg_name=$(retry aws "${aws_opts[@]}" --output=json autoscaling describe-auto-scaling-groups |\
+    jq -r ".AutoScalingGroups[] | select(.Instances[].InstanceId==\"${instance_id}\") | .AutoScalingGroupName")
+  local asg_count
+  asg_count=$(retry aws "${aws_opts[@]}" --output=json autoscaling describe-auto-scaling-groups |\
+    jq -r ".AutoScalingGroups[] | select(.Instances[].InstanceId==\"${instance_id}\") | .DesiredCapacity")
 
-  retry aws ${aws_opts} --output=json autoscaling update-auto-scaling-group \
+  retry aws "${aws_opts[@]}" --output=json autoscaling update-auto-scaling-group \
     --auto-scaling-group-name "${asg_name}" \
-    --desired-capacity $(( ${asg_count} * 2)) \
-    --max-size $(( ${asg_count} * 2))
+    --desired-capacity "$(( asg_count * 2))" \
+    --max-size "$(( asg_count * 2))"
 
   # - wait for 2x group
   local count=0
   while [[ ${count} -lt ${asg_count} ]]; do
     sleep 32
-    count=$(retry kubectl --context=${kube_context} get node -lrole=${role} -Lrole,retiring |\
-      grep -v ${retire_time} |\
+    count=$(retry kubectl --context="${kube_context}" get nodes -l "role=${role}" -Lrole,retiring |\
+      grep -v "${retire_time}" |\
       grep -v NotReady |\
       tail -n +2 |\
       wc -l)
@@ -194,7 +202,7 @@ cycle_nodes() {
   # We do however want the ASG to detect that we are terminating instances so
   # we want ASG to check the health of the instance and "Terminate" (remove from
   # the group)
-  retry aws ${aws_opts} --output=json autoscaling suspend-processes \
+  retry aws "${aws_opts[@]}" --output=json autoscaling suspend-processes \
     --auto-scaling-group-name "${asg_name}" --scaling-processes \
     "Launch" \
     "ReplaceUnhealthy" \
@@ -204,7 +212,7 @@ cycle_nodes() {
 
   # check that nodes are balanced across three AZs
   local nodes_per_zone
-  nodes_per_zone=$(kubectl --context "${kube_context}" get nodes -lrole="${role}" --no-headers -ocustom-columns=':.metadata.labels.failure-domain\.beta\.kubernetes\.io\/zone' |\
+  nodes_per_zone=$(kubectl --context "${kube_context}" get nodes -l "role=${role}" --no-headers -ocustom-columns=':.metadata.labels.failure-domain\.beta\.kubernetes\.io\/zone' |\
       sort |\
       uniq -c)
   local npz
@@ -220,15 +228,16 @@ cycle_nodes() {
   fi
 
   # - drain/terminate labelled nodes (sequentially)
-  local old_nodes=$(retry kubectl --context="${kube_context}" get nodes -l role="${role}",retiring="${retire_time}" -o json | jq -r '.items[].metadata.name')
+  local old_nodes
+  old_nodes=$(retry kubectl --context="${kube_context}" get nodes -l "role=${role},retiring=${retire_time}" -o json | jq -r '.items[].metadata.name')
   for old_node in ${old_nodes}; do
-    kill_node ${old_node}
+    kill_node "${old_node}"
   done
 
   # - resize ASG to original size
-  retry aws ${aws_opts} --output=json autoscaling update-auto-scaling-group \
-    --auto-scaling-group-name "${asg_name}" --desired-capacity ${asg_count} \
-    --max-size ${asg_count}
+  retry aws "${aws_opts[@]}" --output=json autoscaling update-auto-scaling-group \
+    --auto-scaling-group-name "${asg_name}" --desired-capacity "${asg_count}" \
+    --max-size "${asg_count}"
 
   # sleep some time to allow ASG to catch and see the "Terminating" instance
   sleep 64
@@ -238,7 +247,7 @@ cycle_nodes() {
   local ic=0
   while [[ ${ic} -ne ${asg_count} ]]; do
     sleep 32
-    ic=$(retry aws ${aws_opts} --output=json autoscaling describe-auto-scaling-groups \
+    ic=$(retry aws "${aws_opts[@]}" --output=json autoscaling describe-auto-scaling-groups \
       --auto-scaling-group-names "${asg_name}" |\
       jq -r -e '."AutoScalingGroups"[0]."Instances" | length')
     log "waiting ASG to scale down: actual=${ic} desired=${asg_count} asg=\"${asg_name}\""
@@ -246,7 +255,7 @@ cycle_nodes() {
   set -e
 
   # - re-enable ASG actions
-  retry aws ${aws_opts} --output=json autoscaling resume-processes \
+  retry aws "${aws_opts[@]}" --output=json autoscaling resume-processes \
     --auto-scaling-group-name "${asg_name}" --scaling-processes \
     "Launch" \
     "ReplaceUnhealthy" \
@@ -257,14 +266,15 @@ cycle_nodes() {
 
 update() {
   local role=$1
-  label_for_cycling ${role}
-  cycle_nodes ${role}
+  label_for_cycling "${role}"
+  cycle_nodes "${role}"
 }
 
 resume() {
-  local old_nodes=$(retry kubectl --context="${kube_context}" get nodes -l role="${role}",retiring="${resume}" -o json | jq -r '.items[].metadata.name')
+  local old_nodes
+  old_nodes=$(retry kubectl --context="${kube_context}" get nodes -l "role=${role},retiring=${resume}" -o json | jq -r '.items[].metadata.name')
   for old_node in ${old_nodes}; do
-    kill_node ${old_node}
+    kill_node "${old_node}"
   done
 }
 
@@ -279,7 +289,7 @@ if [[ -n "${resume}" ]]; then
 fi
 
 if [[ -n "${role}" ]]; then
-  update ${role}
+  update "${role}"
 else
   update master
   update worker

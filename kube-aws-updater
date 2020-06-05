@@ -149,26 +149,16 @@ kill_node() {
   retry aws "${aws_opts[@]}" ec2 terminate-instances --instance-ids="${instance_id}"
 }
 
-cycle_nodes() {
+upscale_asg() {
   local role=$1
+  local asg_name=$2
+  local asg_count=$3
 
   # - double ASG size
-  local instance_address
-  instance_address=$(retry kubectl --context="${kube_context}" get nodes -l "role=${role},retiring=${retire_time}" -o json | jq -r '.items[0].metadata.name')
-  local instance_id
-  instance_id=$(retry aws "${aws_opts[@]}" --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${instance_address}" |\
-    jq -r '.Reservations[].Instances[].InstanceId')
-  local asg_name
-  asg_name=$(retry aws "${aws_opts[@]}" --output=json autoscaling describe-auto-scaling-groups |\
-    jq -r ".AutoScalingGroups[] | select(.Instances[].InstanceId==\"${instance_id}\") | .AutoScalingGroupName")
-  local asg_count
-  asg_count=$(retry aws "${aws_opts[@]}" --output=json autoscaling describe-auto-scaling-groups |\
-    jq -r ".AutoScalingGroups[] | select(.Instances[].InstanceId==\"${instance_id}\") | .DesiredCapacity")
-
   retry aws "${aws_opts[@]}" --output=json autoscaling update-auto-scaling-group \
     --auto-scaling-group-name "${asg_name}" \
-    --desired-capacity "$(( asg_count * 2))" \
-    --max-size "$(( asg_count * 2))"
+    --desired-capacity "$(( asg_count * 2 ))" \
+    --max-size "$(( asg_count * 2 ))"
 
   # - wait for 2x group
   local count=0
@@ -209,6 +199,10 @@ cycle_nodes() {
     "AZRebalance" \
     "AlarmNotification" \
     "ScheduledActions"
+}
+
+assert_asg_balance() {
+  local role=$1
 
   # check that nodes are balanced across three AZs
   local nodes_per_zone
@@ -226,13 +220,11 @@ cycle_nodes() {
       log "Nodes are not perfectly balanced across zones. Node distribution:\n$nodes_per_zone\nCannot proceed, exiting"
       exit 1
   fi
+}
 
-  # - drain/terminate labelled nodes (sequentially)
-  local old_nodes
-  old_nodes=$(retry kubectl --context="${kube_context}" get nodes -l "role=${role},retiring=${retire_time}" -o json | jq -r '.items[].metadata.name')
-  for old_node in ${old_nodes}; do
-    kill_node "${old_node}"
-  done
+downscale_asg() {
+  local asg_name=$1
+  local asg_count=$2
 
   # - resize ASG to original size
   retry aws "${aws_opts[@]}" --output=json autoscaling update-auto-scaling-group \
@@ -249,7 +241,7 @@ cycle_nodes() {
     sleep 32
     ic=$(retry aws "${aws_opts[@]}" --output=json autoscaling describe-auto-scaling-groups \
       --auto-scaling-group-names "${asg_name}" |\
-      jq -r -e '."AutoScalingGroups"[0]."Instances" | length')
+      jq -r -e '.AutoScalingGroups[0].Instances | length')
     log "waiting ASG to scale down: actual=${ic} desired=${asg_count} asg=\"${asg_name}\""
   done
   set -e
@@ -262,6 +254,35 @@ cycle_nodes() {
     "AZRebalance" \
     "AlarmNotification" \
     "ScheduledActions"
+}
+
+cycle_nodes() {
+  local role=$1
+
+  local instance_address
+  instance_address=$(retry kubectl --context="${kube_context}" get nodes -l "role=${role},retiring=${retire_time}" -o json | jq -r '.items[0].metadata.name')
+  local instance_id
+  instance_id=$(retry aws "${aws_opts[@]}" --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${instance_address}" |\
+    jq -r '.Reservations[].Instances[].InstanceId')
+  local asg_name
+  asg_name=$(retry aws "${aws_opts[@]}" --output=json autoscaling describe-auto-scaling-groups |\
+    jq -r ".AutoScalingGroups[] | select(.Instances[].InstanceId==\"${instance_id}\") | .AutoScalingGroupName")
+  local asg_count
+  asg_count=$(retry aws "${aws_opts[@]}" --output=json autoscaling describe-auto-scaling-groups |\
+    jq -r ".AutoScalingGroups[] | select(.Instances[].InstanceId==\"${instance_id}\") | .DesiredCapacity")
+
+  upscale_asg "${role}" "${asg_name}" "${asg_count}"
+
+  assert_asg_balance "${role}"
+
+  # - drain/terminate labelled nodes (sequentially)
+  local old_nodes
+  old_nodes=$(retry kubectl --context="${kube_context}" get nodes -l "role=${role},retiring=${retire_time}" -o json | jq -r '.items[].metadata.name')
+  for old_node in ${old_nodes}; do
+    kill_node "${old_node}"
+  done
+
+  downscale_asg "${asg_name}" "${asg_count}"
 }
 
 update() {

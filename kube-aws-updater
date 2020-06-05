@@ -35,13 +35,14 @@ EOF
 } >&2
 
 parse_opts() {
-  readonly retire_time=$(date +"%Y-%m-%dT%H-%M-%SZ")
+  local aws_profile=''
 
   # flags
+  aws_opts=()
   kube_context=''
-  aws_profile=''
   role=''
   resume=''
+  retire_time=$(date +"%Y-%m-%dT%H-%M-%SZ")
   timeout=600
 
   while getopts 'c:p:r:hs:t:' flag; do
@@ -68,7 +69,10 @@ parse_opts() {
     exit 1
   fi
 
-  aws_opts=""
+  if [[ -n "${resume}" ]]; then
+      retire_time=${resume}
+  fi
+
   if [[ -n "${aws_profile}" ]]; then
     if aws configure list --profile "${aws_profile}" &> /dev/null; then
       aws_opts=("--profile=${aws_profile}")
@@ -256,6 +260,18 @@ downscale_asg() {
     "ScheduledActions"
 }
 
+drain_nodes() {
+  local role=$1
+  local retire_time=$2
+
+  # - drain/terminate labelled nodes (sequentially)
+  local old_nodes
+  old_nodes=$(retry kubectl --context="${kube_context}" get nodes -l "role=${role},retiring=${retire_time}" -o json | jq -r '.items[].metadata.name')
+  for old_node in ${old_nodes}; do
+    kill_node "${old_node}"
+  done
+}
+
 cycle_nodes() {
   local role=$1
 
@@ -275,12 +291,7 @@ cycle_nodes() {
 
   assert_asg_balance "${role}"
 
-  # - drain/terminate labelled nodes (sequentially)
-  local old_nodes
-  old_nodes=$(retry kubectl --context="${kube_context}" get nodes -l "role=${role},retiring=${retire_time}" -o json | jq -r '.items[].metadata.name')
-  for old_node in ${old_nodes}; do
-    kill_node "${old_node}"
-  done
+  drain_nodes "${role}" "${retire_time}"
 
   downscale_asg "${asg_name}" "${asg_count}"
 }
@@ -291,21 +302,13 @@ update() {
   cycle_nodes "${role}"
 }
 
-resume() {
-  local old_nodes
-  old_nodes=$(retry kubectl --context="${kube_context}" get nodes -l "role=${role},retiring=${resume}" -o json | jq -r '.items[].metadata.name')
-  for old_node in ${old_nodes}; do
-    kill_node "${old_node}"
-  done
-}
-
 checkdeps jq kubectl aws timeout xargs readarray
 parse_opts "${@}"
 
 log "kube cluster: ${kube_context}"
 
 if [[ -n "${resume}" ]]; then
-  resume
+  drain_nodes "${role}" "${retire_time}"
   exit 0
 fi
 

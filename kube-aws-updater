@@ -183,7 +183,7 @@ upscale_asg() {
   # - Launch
   # - Terminate         # Do not suspend
   # - HealthCheck       # Do not suspend
-  # - ReplaceUnhealthy
+  # - ReplaceUnhealthy  # Do not suspend
   # - AZRebalance
   # - AlarmNotification
   # - ScheduledActions
@@ -199,7 +199,6 @@ upscale_asg() {
   retry aws "${aws_opts[@]}" --output=json autoscaling suspend-processes \
     --auto-scaling-group-name "${asg_name}" --scaling-processes \
     "Launch" \
-    "ReplaceUnhealthy" \
     "AZRebalance" \
     "AlarmNotification" \
     "ScheduledActions"
@@ -230,11 +229,6 @@ downscale_asg() {
   local asg_name=$1
   local asg_count=$2
 
-  # - resize ASG to original size
-  retry aws "${aws_opts[@]}" --output=json autoscaling update-auto-scaling-group \
-    --auto-scaling-group-name "${asg_name}" --desired-capacity "${asg_count}" \
-    --max-size "${asg_count}"
-
   # sleep some time to allow ASG to catch and see the "Terminating" instance
   sleep 64
 
@@ -250,11 +244,15 @@ downscale_asg() {
   done
   set -e
 
+  # - resize ASG to original size
+  retry aws "${aws_opts[@]}" --output=json autoscaling update-auto-scaling-group \
+    --auto-scaling-group-name "${asg_name}" --desired-capacity "${asg_count}" \
+    --max-size "${asg_count}"
+
   # - re-enable ASG actions
   retry aws "${aws_opts[@]}" --output=json autoscaling resume-processes \
     --auto-scaling-group-name "${asg_name}" --scaling-processes \
     "Launch" \
-    "ReplaceUnhealthy" \
     "AZRebalance" \
     "AlarmNotification" \
     "ScheduledActions"

@@ -25,12 +25,15 @@ log() {
 usage() {
   cat <<EOF
 Usage: $0 -c <kube_context> -p <aws_profile> -s [retire_time_label] -r [role]
-        -t [timeout]
+        -t [timeout] -n [node_batch_size]
 
   -s    Resume node rolling. Argument is retire_time label. If set, -r [role]
         must also be set
   -t    Node drain timeout. How long to wait for the node to drain before
         shutting it down (in seconds, default ${timeout}s)
+  -n    Node batch size. How many nodes to add to the ASG. Also, how many nodes
+        will be drained before waiting for the ASG to stabilise again. It needs
+        to be a multiple of 3.
 EOF
 } >&2
 
@@ -44,14 +47,16 @@ parse_opts() {
   resume=''
   retire_time=$(date +"%Y-%m-%dT%H-%M-%SZ")
   timeout=600
+  node_batch_size=3
 
-  while getopts 'c:p:r:hs:t:' flag; do
+  while getopts 'c:p:r:hs:t:n:' flag; do
     case "${flag}" in
       c) kube_context="${OPTARG}" ;;
       p) aws_profile="${OPTARG}" ;;
       r) role="${OPTARG}" ;;
       s) resume="${OPTARG}" ;;
       t) timeout="${OPTARG}" ;;
+      n) node_batch_size="${OPTARG}" ;;
       h) usage && exit 0 ;;
       *) log "Unexpected option: ${flag}" && usage && exit 1 ;;
     esac
@@ -71,6 +76,11 @@ parse_opts() {
 
   if [[ -n "${resume}" ]]; then
       retire_time=${resume}
+  fi
+
+  if (( node_batch_size % 3 != 0 )); then
+      log "Unsupported node_batch_size value '${node_batch_size}'. Please use a multiple of 3"
+      exit 1
   fi
 
   if [[ -n "${aws_profile}" ]]; then
@@ -158,29 +168,20 @@ upscale_asg() {
   local asg_name=$2
   local asg_count=$3
 
-  # - double ASG size
+  # - increase ASG size
   retry aws "${aws_opts[@]}" --output=json autoscaling update-auto-scaling-group \
     --auto-scaling-group-name "${asg_name}" \
-    --desired-capacity "$(( asg_count * 2 ))" \
-    --max-size "$(( asg_count * 2 ))"
+    --desired-capacity "$(( asg_count + node_batch_size ))" \
+    --max-size "$(( asg_count + node_batch_size ))"
 
-  # - wait for 2x group
-  local count=0
-  while [[ ${count} -lt ${asg_count} ]]; do
-    sleep 32
-    count=$(retry kubectl --context="${kube_context}" get nodes -l "role=${role}" -Lrole,retiring |\
-      grep -v "${retire_time}" |\
-      grep -v NotReady |\
-      tail -n +2 |\
-      wc -l)
-    log "waiting for new nodes: actual=${count} expected=${asg_count} asg=\"${asg_name}\""
-  done
+  # - wait for new nodes
+  wait_for_ready_nodes "${role}" "${node_batch_size}"
 
   # - stop ASG actions
   ## auto-scaling processes:
   # https://docs.aws.amazon.com/autoscaling/ec2/userguide/as-suspend-resume-processes.html#process-types
   #
-  # - Launch
+  # - Launch            # Do not suspend (suspended before draining the final batch of nodes)
   # - Terminate         # Do not suspend
   # - HealthCheck       # Do not suspend
   # - ReplaceUnhealthy  # Do not suspend
@@ -198,7 +199,6 @@ upscale_asg() {
   # the group)
   retry aws "${aws_opts[@]}" --output=json autoscaling suspend-processes \
     --auto-scaling-group-name "${asg_name}" --scaling-processes \
-    "Launch" \
     "AZRebalance" \
     "AlarmNotification" \
     "ScheduledActions"
@@ -258,15 +258,49 @@ downscale_asg() {
     "ScheduledActions"
 }
 
+wait_for_ready_nodes() {
+  local role=$1
+  local node_count=$2
+
+  # wait for the required number of ready, not retired nodes
+  set +e
+  local nc=0
+  while : ; do
+    nc=$(retry kubectl --context="${kube_context}" get nodes -l "role=${role},!retiring" -o json |\
+      jq '[.items[] | select(.status.conditions[] | select(.type == "Ready" and .status == "True" ))] | length')
+    log "waiting for ready nodes: actual=${nc} desired=${node_count} role=\"${role}\""
+    if [[ ${nc} -ge ${node_count} ]]; then
+        break
+    fi
+    sleep 32
+  done
+  set -e
+}
+
 drain_nodes() {
   local role=$1
   local retire_time=$2
+  local asg_name=$3
+  local asg_count=$4
 
   # - drain/terminate labelled nodes (sequentially)
   local old_nodes
   old_nodes=$(retry kubectl --context="${kube_context}" get nodes -l "role=${role},retiring=${retire_time}" -o json | jq -r '.items[].metadata.name')
+  local old_nodes_count
+  old_nodes_count=$(echo "${old_nodes}" | wc -l)
+  local nc=$(( asg_count - old_nodes_count + node_batch_size ))
   for old_node in ${old_nodes}; do
+    if (( nc < old_nodes_count )) && (( nc % node_batch_size == 0 )); then
+      log "waiting for new nodes to become ready before starting to drain the next node batch"
+      wait_for_ready_nodes "${role}" "${nc}"
+    elif (( nc == old_nodes_count )); then
+      log "final node batch, waiting for final nodes to become ready and disabling the ASG 'Launch' process"
+      wait_for_ready_nodes "${role}" "${nc}"
+      retry aws "${aws_opts[@]}" --output=json autoscaling suspend-processes \
+        --auto-scaling-group-name "${asg_name}" --scaling-processes "Launch"
+    fi
     kill_node "${old_node}"
+    nc=$((nc + 1))
   done
 }
 
@@ -292,6 +326,10 @@ update() {
     fi
   done
   log "asg_name: '${asg_name}' / asg_count: '${asg_count}'"
+  if (( node_batch_size > asg_count )); then
+      log "node_batch_size cannot be greater than the asg size!"
+      exit 1
+  fi
 
   if [[ -z "${resume}" ]]; then
     upscale_asg "${role}" "${asg_name}" "${asg_count}"
@@ -299,7 +337,7 @@ update() {
     assert_asg_balance "${role}"
   fi
 
-  drain_nodes "${role}" "${retire_time}"
+  drain_nodes "${role}" "${retire_time}" "${asg_name}" "${asg_count}"
 
   downscale_asg "${asg_name}" "${asg_count}"
 }

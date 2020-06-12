@@ -278,17 +278,22 @@ update() {
     label_for_cycling "${role}"
   fi
 
-  local instance_address
-  instance_address=$(retry kubectl --context="${kube_context}" get nodes -l "role=${role},retiring=${retire_time}" -o json | jq -r '.items[0].metadata.name')
-  local instance_id
-  instance_id=$(retry aws "${aws_opts[@]}" --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${instance_address}" |\
-    jq -r '.Reservations[].Instances[].InstanceId')
-  local asgs
-  asgs=$(retry aws "${aws_opts[@]}" --output=json autoscaling describe-auto-scaling-groups)
-  local asg_name
-  asg_name=$(echo "${asgs}" | jq -r ".AutoScalingGroups[] | select(.Instances[].InstanceId==\"${instance_id}\") | .AutoScalingGroupName")
-  local asg_count
-  asg_count=$(echo "${asgs}" | jq -r ".AutoScalingGroups[] | select(.AutoScalingGroupName==\"${asg_name}\") | .MinSize")
+  local instance_address instance_id asgs asg_name asg_count
+  while : ; do
+    instance_address=$(retry kubectl --context="${kube_context}" get nodes -l "role=${role},retiring=${retire_time}" -o json | jq -r '.items[0].metadata.name')
+    instance_id=$(retry aws "${aws_opts[@]}" --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${instance_address}" |\
+      jq -r '.Reservations[].Instances[].InstanceId')
+    asgs=$(retry aws "${aws_opts[@]}" --output=json autoscaling describe-auto-scaling-groups)
+    asg_name=$(echo "${asgs}" | jq -r ".AutoScalingGroups[] | select(.Instances[].InstanceId==\"${instance_id}\") | .AutoScalingGroupName")
+    asg_count=$(echo "${asgs}" | jq -r ".AutoScalingGroups[] | select(.AutoScalingGroupName==\"${asg_name}\") | .MinSize")
+    if [[ -z "${asg_name}" ]]; then
+        log "could not discover the ASG name, a node might be terminating, sleeping and trying again..."
+        sleep 60
+    else
+        break
+    fi
+  done
+  log "asg_name: '${asg_name}' / asg_count: '${asg_count}'"
 
   if [[ -z "${resume}" ]]; then
     upscale_asg "${role}" "${asg_name}" "${asg_count}"

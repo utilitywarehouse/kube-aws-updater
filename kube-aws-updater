@@ -283,13 +283,33 @@ drain_nodes() {
   local asg_name=$3
   local asg_count=$4
 
-  # - drain/terminate labelled nodes (sequentially)
+  # Rearrange the order of the nodes based on their availailability zone. Given
+  # six nodes spread evenly in zones A, B and C, we want the resulting array to
+  # list the nodes in this order: A, B, C, A, B, C.
+  # This way, we avoid draining too many nodes in the same zone sequentially,
+  # which can seriously unbalance the ASG and cause scheduling issues, since we
+  # don't strictly control in which AZ any new nodes will be launched.
+  local old_nodes_by_zone
+  readarray -t old_nodes_by_zone < <(kubectl --context="${kube_context}" get nodes -l "role=${role},retiring=${retire_time}" -ojson |\
+    jq -r '.items | group_by(.metadata.labels["failure-domain.beta.kubernetes.io/zone"])[] | [.[].metadata.name] | join(" ")')
   local old_nodes
-  old_nodes=$(retry kubectl --context="${kube_context}" get nodes -l "role=${role},retiring=${retire_time}" -o json | jq -r '.items[].metadata.name')
-  local old_nodes_count
-  old_nodes_count=$(echo "${old_nodes}" | wc -l)
+  declare -t old_nodes
+  local zc="${#old_nodes_by_zone[*]}"
+  local i j
+  i=0
+  for z in "${old_nodes_by_zone[@]}"; do
+    j=0
+    for n in ${z}; do
+      old_nodes[((i + j * zc))]=${n}
+      j=$((j + 1))
+    done
+    i=$((i + 1))
+  done
+  local old_nodes_count="${#old_nodes[*]}"
+
+  # - drain/terminate labelled nodes (sequentially)
   local nc=$(( asg_count - old_nodes_count + node_batch_size ))
-  for old_node in ${old_nodes}; do
+  for old_node in "${old_nodes[@]}"; do
     if (( nc < old_nodes_count )) && (( nc % node_batch_size == 0 )); then
       log "waiting for new nodes to become ready before starting to drain the next node batch"
       wait_for_ready_nodes "${role}" "${nc}"

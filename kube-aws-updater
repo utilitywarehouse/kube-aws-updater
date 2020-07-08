@@ -289,7 +289,8 @@ drain_nodes() {
 
   # Rearrange the order of the nodes based on their availailability zone. Given
   # six nodes spread evenly in zones A, B and C, we want the resulting array to
-  # list the nodes in this order: A, B, C, A, B, C.
+  # list the nodes in this order:
+  #   node-a-0, node-b-0, node-c-0, node-a-1, node-b-1, node-c-1
   # This way, we avoid draining too many nodes in the same zone sequentially,
   # which can seriously unbalance the ASG and cause scheduling issues, since we
   # don't strictly control in which AZ any new nodes will be launched.

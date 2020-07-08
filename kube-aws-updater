@@ -294,6 +294,9 @@ drain_nodes() {
   # which can seriously unbalance the ASG and cause scheduling issues, since we
   # don't strictly control in which AZ any new nodes will be launched.
   local old_nodes_by_zone
+  # Each item in this array is a space-separated list of node names for a given
+  # AZ. For example:
+  #  [ "node-a-0 node-a-1" "node-b-0 node-b-1" "node-c-0 node-c-1" ]
   readarray -t old_nodes_by_zone < <(kubectl --context="${kube_context}" get nodes -l "role=${role},retiring=${retire_time}" -ojson |\
     jq -r '.items | group_by(.metadata.labels["failure-domain.beta.kubernetes.io/zone"])[] | [.[].metadata.name] | join(" ")')
   local old_nodes
@@ -301,6 +304,9 @@ drain_nodes() {
   local zc="${#old_nodes_by_zone[*]}"
   local i j
   i=0
+  # This nested loop created the interleaved list of nodes in old_nodes. For
+  # example, given the node array from above, the resulting array will be:
+  #   [node-a-0 node-b-0 node-c-0 node-a-1 node-b-1 node-c-1]
   for z in "${old_nodes_by_zone[@]}"; do
     j=0
     for n in ${z}; do
@@ -312,11 +318,22 @@ drain_nodes() {
   local old_nodes_count="${#old_nodes[*]}"
 
   # - drain/terminate labelled nodes (sequentially)
-  local nc=$(( asg_count - old_nodes_count + node_batch_size ))
+  # Under normal operation, nc == node_batch_size. When resuming, it's adjusted
+  # to take the already terminated old nodes under consideration.
+  local nc=$(( node_batch_size + asg_count - old_nodes_count ))
   for old_node in "${old_nodes[@]}"; do
+    # If we just finished draining the last node a batch and the next batch is
+    # not the last one (old_nodes_count - node_batch_size), wait for any pending
+    # nodes to become ready. This ensures we operate on a balanced cluster, if
+    # the ASG is slow to react.
     if (( nc < old_nodes_count )) && (( nc % node_batch_size == 0 )); then
       log "waiting for new nodes to become ready before starting to drain the next node batch"
       wait_for_ready_nodes "${role}" "${nc}"
+    # When we reach the last node batch (old_nodes_count - node_batch_size), we
+    # should wait for any pending new nodes to become ready and then pause the
+    # "Launch" action. This ensures that the ASG size at the end is the desired
+    # and that the ASG will not terminate any instances resizing and resuming
+    # all operations.
     elif (( nc == old_nodes_count )); then
       log "final node batch, waiting for final nodes to become ready and disabling the ASG 'Launch' process"
       wait_for_ready_nodes "${role}" "${nc}"

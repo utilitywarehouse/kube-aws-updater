@@ -366,7 +366,7 @@ update() {
         break
     fi
   done
-  log "asg_name: '${asg_name}' / asg_count: '${asg_count}'"
+  log "asg_name: asg_name=\"${asg_name}\" asg_count=${asg_count}"
   if (( node_batch_size > asg_count )); then
       log "node_batch_size cannot be greater than the asg size!"
       exit 1

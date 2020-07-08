@@ -33,7 +33,7 @@ Usage: $0 -c <kube_context> -p <aws_profile> -s [retire_time_label] -r [role]
         shutting it down (in seconds, default ${timeout}s)
   -n    Node batch size. How many nodes to add to the ASG. Also, how many nodes
         will be drained before waiting for the ASG to stabilise again. It needs
-        to be a multiple of 3.
+        to be a multiple of 3 (default ${node_batch_size})
 EOF
 } >&2
 
@@ -78,6 +78,10 @@ parse_opts() {
       retire_time=${resume}
   fi
 
+  if (( node_batch_size == 0 )); then
+      log "Unsupported node_batch_size value '${node_batch_size}'. Please use a value greater than 0"
+      exit 1
+  fi
   if (( node_batch_size % 3 != 0 )); then
       log "Unsupported node_batch_size value '${node_batch_size}'. Please use a multiple of 3"
       exit 1

@@ -210,6 +210,7 @@ upscale_asg() {
 
 assert_asg_balance() {
   local role=$1
+  local grace_delta=1
 
   # check that nodes are balanced across three AZs
   local nodes_per_zone
@@ -224,12 +225,13 @@ assert_asg_balance() {
   fi
   # shellcheck disable=SC2252
   if [ "${npz[0]}" != "${npz[1]}" ] || [ "${npz[0]}" != "${npz[2]}" ] || [ "${npz[1]}" != "${npz[2]}" ]; then
-      log "Nodes are not perfectly balanced across zones. Node distribution:\n$nodes_per_zone"
-      if (( (npz[0] - npz[1]) ** 2 > 1 )) || (( (npz[0] - npz[2]) ** 2 > 1 )) || (( (npz[1] - npz[2]) ** 2 > 1 )); then
-        log "Node distribution is very unbalanced, exiting"
+      log "Nodes are not balanced across zones. Node distribution:\n$nodes_per_zone\nWe can tolerate deviations of up to ${grace_delta} nodes"
+      # Bash has no method to get the absolute value of a number so instead of
+      # abs(x0 - x1) > grace_delta we can check (x0 - x1) ^ 2 > grace_delta ^ 2
+      if (( (npz[0] - npz[1]) ** 2 > grace_delta ** 2 )) || (( (npz[0] - npz[2]) ** 2 > grace_delta ** 2 )) || (( (npz[1] - npz[2]) ** 2 > grace_delta ** 2 )); then
+        log "Exiting"
         exit 1
       fi
-      log "Balance is off by one node, ignoring"
   fi
 }
 

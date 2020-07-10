@@ -224,8 +224,12 @@ assert_asg_balance() {
   fi
   # shellcheck disable=SC2252
   if [ "${npz[0]}" != "${npz[1]}" ] || [ "${npz[0]}" != "${npz[2]}" ] || [ "${npz[1]}" != "${npz[2]}" ]; then
-      log "Nodes are not perfectly balanced across zones. Node distribution:\n$nodes_per_zone\nCannot proceed, exiting"
-      exit 1
+      log "Nodes are not perfectly balanced across zones. Node distribution:\n$nodes_per_zone"
+      if (( (npz[0] - npz[1]) ** 2 > 1 )) || (( (npz[0] - npz[2]) ** 2 > 1 )) || (( (npz[1] - npz[2]) ** 2 > 1 )); then
+        log "Node distribution is very unbalanced, exiting"
+        exit 1
+      fi
+      log "Balance is off by one node, ignoring"
   fi
 }
 

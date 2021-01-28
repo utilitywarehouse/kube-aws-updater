@@ -19,7 +19,19 @@ set -o nounset
 set -o pipefail
 
 log() {
-  echo -e "[$(date +'%Y-%m-%dT%H:%M:%S')]: ${*}" >&2
+  echo -e "${*}" >&2
+}
+
+logger() {
+    while read -r line; do
+      printf "%(%Y-%m-%dT%H:%M:%S)T %s\n" '-1' "${line}"
+    done
+}
+
+node_logger() {
+    while read -r line; do
+      printf "[${1:-unknown}] %s\n" "${line}"
+    done
 }
 
 usage() {
@@ -46,7 +58,7 @@ parse_opts() {
   role=''
   resume=''
   retire_time=$(date +"%Y-%m-%dT%H-%M-%SZ")
-  timeout=600
+  timeout=''
   node_batch_size=3
 
   while getopts 'c:p:r:hs:t:n:' flag; do
@@ -96,6 +108,13 @@ parse_opts() {
       log "Invalid profile: ${aws_profile}"
       exit 1
     fi
+  fi
+
+  # If a timeout isn't set then default to 10m * the number of nodes that may
+  # be draining concurrently (node_batch_size). This affords the same timeout to
+  # pods covered by the same PDB.
+  if [[ -z "${timeout}" ]]; then
+    timeout=$((600*node_batch_size))
   fi
 }
 
@@ -149,7 +168,7 @@ kill_node() {
   local node=$1
 
   set +e
-  time timeout "${timeout}" kubectl --context="${kube_context}" drain "${node}" --ignore-daemonsets --force --delete-emptydir-data
+  time timeout --foreground "${timeout}" kubectl --context="${kube_context}" drain "${node}" --ignore-daemonsets --force --delete-emptydir-data
   local rc=$?
   set -e
   if [[ ${rc} -eq 0 ]]; then
@@ -329,27 +348,31 @@ drain_nodes() {
   # to take the already terminated old nodes under consideration.
   local nc=$(( node_batch_size + asg_count - old_nodes_count ))
   for old_node in "${old_nodes[@]}"; do
-    # If we just finished draining the last node a batch and the next batch is
-    # not the last one (old_nodes_count - node_batch_size), wait for any pending
-    # nodes to become ready. This ensures we operate on a balanced cluster, if
-    # the ASG is slow to react.
+    # Wait for kill_node to finish for the nodes in the previous batch and the
+    # replacement nodes to become ready before moving onto the next batch. This
+    # ensures we operate on a balanced cluster, if the ASG is slow to react.
     if (( nc < old_nodes_count )) && (( nc % node_batch_size == 0 )); then
+      wait
       log "waiting for new nodes to become ready before starting to drain the next node batch"
       wait_for_ready_nodes "${role}" "${nc}"
     # When we reach the last node batch (old_nodes_count - node_batch_size), we
     # should wait for any pending new nodes to become ready and then pause the
     # "Launch" action. This ensures that the ASG size at the end is the desired
-    # and that the ASG will not terminate any instances resizing and resuming
-    # all operations.
+    # size and that the ASG will not terminate any instances when resizing and
+    # resuming operations.
     elif (( nc == old_nodes_count )); then
+      wait
       log "final node batch, waiting for final nodes to become ready and disabling the ASG 'Launch' process"
       wait_for_ready_nodes "${role}" "${nc}"
       retry aws "${aws_opts[@]}" --output=json autoscaling suspend-processes \
         --auto-scaling-group-name "${asg_name}" --scaling-processes "Launch"
     fi
-    kill_node "${old_node}"
+    # Run kill_node in a background job. Redirect stdout and stderr through
+    # node_logger which adds the name of the node to each line of output.
+    kill_node "${old_node}" > >(node_logger "${old_node}") 2> >(node_logger "${old_node}" >&2) &
     nc=$((nc + 1))
   done
+  wait
 }
 
 update() {
@@ -390,8 +413,19 @@ update() {
   downscale_asg "${asg_name}" "${asg_count}"
 }
 
+if [[ "${BASH_VERSINFO:-0}" -lt 4 ]]; then
+  echo "Bash version must be >=4"
+  exit 1
+fi
 checkdeps jq kubectl aws timeout xargs readarray
 parse_opts "${@}"
+
+# Cleanup child processes on exit
+trap "kill 0" EXIT
+
+# Redirect stdout and stderr through 'logger' which will timestamp each line of
+# output
+exec > >(logger) 2> >(logger >&2)
 
 log "kube cluster: ${kube_context}"
 

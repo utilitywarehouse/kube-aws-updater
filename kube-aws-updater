@@ -149,7 +149,7 @@ kill_node() {
   local node=$1
 
   set +e
-  time timeout "${timeout}" kubectl --context="${kube_context}" drain "${node}" --ignore-daemonsets --force --delete-local-data
+  time timeout "${timeout}" kubectl --context="${kube_context}" drain "${node}" --ignore-daemonsets --force --delete-emptydir-data
   local rc=$?
   set -e
   if [[ ${rc} -eq 0 ]]; then

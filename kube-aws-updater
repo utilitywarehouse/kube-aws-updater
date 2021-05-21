@@ -214,7 +214,7 @@ assert_asg_balance() {
 
   # check that nodes are balanced across three AZs
   local nodes_per_zone
-  nodes_per_zone=$(kubectl --context "${kube_context}" get nodes -l "role=${role}" --no-headers -ocustom-columns=':.metadata.labels.failure-domain\.beta\.kubernetes\.io\/zone' |\
+  nodes_per_zone=$(kubectl --context "${kube_context}" get nodes -l "role=${role}" --no-headers -ocustom-columns=':.metadata.labels.topology\.kubernetes\.io\/zone' |\
       sort |\
       uniq -c)
   local npz
@@ -305,7 +305,7 @@ drain_nodes() {
   # AZ. For example:
   #  [ "node-a-0 node-a-1" "node-b-0 node-b-1" "node-c-0 node-c-1" ]
   readarray -t old_nodes_by_zone < <(kubectl --context="${kube_context}" get nodes -l "role=${role},retiring=${retire_time}" -ojson |\
-    jq -r '.items | group_by(.metadata.labels["failure-domain.beta.kubernetes.io/zone"])[] | [.[].metadata.name] | join(" ")')
+    jq -r '.items | group_by(.metadata.labels["topology.kubernetes.io/zone"])[] | [.[].metadata.name] | join(" ")')
   local old_nodes
   declare -t old_nodes
   local zc="${#old_nodes_by_zone[*]}"

@@ -379,6 +379,8 @@ update() {
       exit 1
   fi
 
+  make_initial_snapshot
+
   if [[ -z "${resume}" ]]; then
     upscale_asg "${role}" "${asg_name}" "${asg_count}"
 
@@ -388,10 +390,14 @@ update() {
   drain_nodes "${role}" "${retire_time}" "${asg_name}" "${asg_count}"
 
   downscale_asg "${asg_name}" "${asg_count}"
+
+  full_run_report
 }
 
 checkdeps jq kubectl aws timeout xargs readarray
 parse_opts "${@}"
+
+source ./report.sh
 
 log "kube cluster: ${kube_context}"
 

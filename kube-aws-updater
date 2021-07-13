@@ -38,10 +38,9 @@ EOF
 } >&2
 
 parse_opts() {
-  local aws_profile=''
-
   # flags
   aws_opts=()
+  aws_profile=''
   kube_context=''
   role=''
   resume=''
@@ -284,6 +283,7 @@ wait_for_ready_nodes() {
     fi
     sleep 32
   done
+  run_report
   set -e
 }
 
@@ -387,11 +387,17 @@ update() {
 
   drain_nodes "${role}" "${retire_time}" "${asg_name}" "${asg_count}"
 
+  run_report
+
   downscale_asg "${asg_name}" "${asg_count}"
+
+  run_report
 }
 
 checkdeps jq kubectl aws timeout xargs readarray
 parse_opts "${@}"
+
+source ./report.sh
 
 log "kube cluster: ${kube_context}"
 

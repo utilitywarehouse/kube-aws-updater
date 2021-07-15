@@ -38,21 +38,15 @@ RUN_TIMESTAMP=""
 # Manage metadata about the report
 ########################################
 
-# Initialize the global state. Order is important
-initialize_global_state() {
-  ASG_NAME=$(get_asg_name)
-  RUN_TIMESTAMP="$(timestamp_now)"               # ISO8601 UTC
-  ROLL_TIMESTAMP="$(get_ongoing_roll_timestamp)" # ISO8601 UTC
-
-  #if [[ "${timestamp}" == "" ]]; then
-  #  timestamp="${RUN_TIMESTAMP}"
-  #fi
-
+# Initialize global state. Order is important
+initialize() {
   if [ ! -f "${SNAPSHOTS_FILE}" ]; then
     echo "[]" >"${SNAPSHOTS_FILE}"
   fi
 
-  make_snapshot "now"
+  ASG_NAME=$(get_asg_name)
+  ROLL_TIMESTAMP="$(get_ongoing_roll_timestamp)" # ISO8601 UTC
+  RUN_TIMESTAMP=$(make_snapshot)                 # ISO8601 UTC
 }
 
 get_global_state() {
@@ -325,15 +319,8 @@ az_node_status() {
 ##########
 
 run_report() {
-  echo "----------------------"
-  echo "Initial cluster state:"
-  echo ""
-  cluster_report "${RUN_TIMESTAMP}"
-  echo ""
-  make_snapshot "now"
-  cluster_report "now"
-
-  changes_report "2021-07-12T14:10:47Z" "now"
+  make_snapshot
+  full_report "${RUN_TIMESTAMP}" "now"
 }
 
 full_report() {
@@ -417,32 +404,32 @@ changes_report() {
 # SNAPSHOTS #
 #############
 
+# Output the snapshot of the provided timestamp
 get_snapshot() {
   local timestamp=$1
   jq --compact-output '.[] | select(.timestamp == "'"${timestamp}"'")' "${SNAPSHOTS_FILE}"
 }
 
+# Make a new snapshot and output its timestamp
 make_snapshot() {
-  local timestamp=$1
-  local snapshot snapshots
-  snapshot='{"timestamp": "'"${timestamp}"'","asg":'"$(get_asg | jq -c)"',"nodes":'"$(get_nodes | jq -c)"'}'
-  snapshots=$(jq -c '.' "${SNAPSHOTS_FILE}")
+  local asg nodes now snapshots timestamp timestamped
 
-  # If updating "now" snapshot, remove the older one
-  if [[ "${timestamp}" == "now" ]]; then
-    snapshots=$(echo "${snapshots}" | jq '[ .[] | select(.timestamp != "now") ]')
-  fi
+  timestamp=$(timestamp_now)
+  asg=$(get_asg | jq --compact-output)
+  nodes=$(get_nodes | jq --compact-output)
+  timestamped='{"timestamp": "'"${timestamp}"'","asg":'"${asg}"',"nodes":'"${nodes}"'}'
+  now='{"timestamp": "now","asg":'"${asg}"',"nodes":'"${nodes}"'}'
+  snapshots=$(jq --compact-output '.' "${SNAPSHOTS_FILE}")
 
-  echo "${snapshots}" | jq --compact-output '. + ['"${snapshot}"']' >"${SNAPSHOTS_FILE}"
-}
+  # Remove previous "now" snapshot
+  snapshots=$(echo "${snapshots}" | jq '[ .[] | select(.timestamp != "now") ]')
 
-# Makes a snapshot of the cluster, saving it as the RUN_TIMESTAMP
-make_initial_snapshot() {
-  make_snapshot "${RUN_TIMESTAMP}"
+  echo "${snapshots}" | jq --compact-output '. + ['"${timestamped}"'] + ['"${now}"']' >"${SNAPSHOTS_FILE}"
+  echo "${timestamp}"
 }
 
 ##############
 # STATEMENTS #
 ##############
 
-initialize_global_state
+initialize

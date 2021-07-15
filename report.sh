@@ -328,7 +328,7 @@ full_report() {
   local after=$2
 
   echo "------------------------------------------------------------"
-  echo "Full report:"
+  echo "Full report of "${ASG_NAME}":"
   echo ""
   cluster_report "${before}"
   echo ""

@@ -123,6 +123,17 @@ asg_disabled_actions_count() {
   get_snapshot "${timestamp}" | jq -r '.asg.SuspendedProcesses | length'
 }
 
+az_instance_count() {
+  local instances=$1
+
+  local total_count a_count b_count c_count
+  total_count=$(echo "${instances}" | jq 'length')
+  a_count=$(echo "${instances}" | jq '[.[] | select(.AvailabilityZone == "eu-west-1a")] | length')
+  b_count=$(echo "${instances}" | jq '[.[] | select(.AvailabilityZone == "eu-west-1b")] | length')
+  c_count=$(echo "${instances}" | jq '[.[] | select(.AvailabilityZone == "eu-west-1c")] | length')
+  echo "${total_count} (${a_count}/${b_count}/${c_count})"
+}
+
 asg_status() {
   local timestamp=$1
 
@@ -134,11 +145,7 @@ az_instance_status() {
 
   local instances total_count a_count b_count c_count
   instances=$(get_snapshot "${timestamp}" | jq '.asg.Instances')
-  total_count=$(echo "${instances}" | jq 'length')
-  a_count=$(echo "${instances}" | jq '[.[] | select(.AvailabilityZone == "eu-west-1a")] | length')
-  b_count=$(echo "${instances}" | jq '[.[] | select(.AvailabilityZone == "eu-west-1b")] | length')
-  c_count=$(echo "${instances}" | jq '[.[] | select(.AvailabilityZone == "eu-west-1c")] | length')
-  echo "AWS Instances: ${total_count} (${a_count}/${b_count}/${c_count})"
+  echo "AWS Instances: $(az_instance_count "${instances}")"
 }
 
 ########
@@ -267,25 +274,18 @@ changes_report() {
   changes=$(changes "${before}" "${after}")
   nodes_added=$(echo "${changes}" | jq '[ .nodes[] | select(.change == "added") ]')
   nodes_removed=$(echo "${changes}" | jq '[ .nodes[] | select(.change == "removed") ]')
-  instances_added_total=$(echo "${changes}" | jq '[ .instances[] | select(.change == "added") ] | length')
-  instances_added_a=$(echo "${changes}" | jq '[ .instances[] | select(.change == "added") | select(.AvailabilityZone == "eu-west-1a") ] | length')
-  instances_added_b=$(echo "${changes}" | jq '[ .instances[] | select(.change == "added") | select(.AvailabilityZone == "eu-west-1b") ] | length')
-  instances_added_c=$(echo "${changes}" | jq '[ .instances[] | select(.change == "added") | select(.AvailabilityZone == "eu-west-1c") ] | length')
-  instances_removed_total=$(echo "${changes}" | jq '[ .instances[] | select(.change == "removed") ] | length')
-  instances_removed_a=$(echo "${changes}" | jq '[ .instances[] | select(.change == "removed") | select(.AvailabilityZone == "eu-west-1a") ] | length')
-  instances_removed_b=$(echo "${changes}" | jq '[ .instances[] | select(.change == "removed") | select(.AvailabilityZone == "eu-west-1b") ] | length')
-  instances_removed_c=$(echo "${changes}" | jq '[ .instances[] | select(.change == "removed") | select(.AvailabilityZone == "eu-west-1c") ] | length')
-
-  instances_total="$(("${instances_added_total}" - "${instances_removed_total}")) ($(("${instances_added_a}" - "${instances_removed_a}"))/$(("${instances_added_b}" - "${instances_removed_b}"))/$(("${instances_added_c}" - "${instances_removed_c}")))"
-  instances_added="${instances_added_total} (${instances_added_a}/${instances_added_b}/${instances_added_c})"
-  instances_removed="${instances_removed_total} (${instances_removed_a}/${instances_removed_b}/${instances_removed_c})"
+  instances_added=$(echo "${changes}" | jq '[ .instances[] | select(.change == "added") ]')
+  instances_removed=$(echo "${changes}" | jq '[ .instances[] | select(.change == "removed") ]')
 
   nodes_added_az_count=$(az_node_count "${nodes_added}")
   nodes_removed_az_count=$(az_node_count "${nodes_removed}")
   nodes_total_az_count=$(az_count_diff "${nodes_added_az_count}" "${nodes_removed_az_count}")
+  instances_added_az_count=$(az_instance_count "${instances_added}")
+  instances_removed_az_count=$(az_instance_count "${instances_removed}")
+  instances_total_az_count=$(az_count_diff "${instances_added_az_count}" "${instances_removed_az_count}")
 
   echo "Changes between \"${before}\" and \"${after}\":"
-  echo "* AWS Instances: +${instances_added} -${instances_removed} = ${instances_total}"
+  echo "* AWS Instances: +${instances_added_az_count} -${instances_removed_az_count} = ${instances_total_az_count}"
   echo "* Kube Nodes: +${nodes_added_az_count} -${nodes_removed_az_count} = ${nodes_total_az_count}"
 }
 

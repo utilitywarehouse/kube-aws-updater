@@ -387,6 +387,8 @@ update() {
 
   drain_nodes "${role}" "${retire_time}" "${asg_name}" "${asg_count}"
 
+  run_report
+
   downscale_asg "${asg_name}" "${asg_count}"
 
   run_report

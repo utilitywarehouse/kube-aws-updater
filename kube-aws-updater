@@ -26,11 +26,10 @@ log() {
 
 usage() {
   cat <<EOF
-Usage: $0 -c <kube_context> -p <aws_profile> -s [retire_time_label] -r [role]
+Usage: $0 -c <kube_context> -p <aws_profile> -r <role> -s [retire_time_label]
         -t [timeout] -n [node_batch_size]
 
-  -s    Resume node rolling. Argument is retire_time label. If set, -r [role]
-        must also be set
+  -s    Resume node rolling. Argument is retire_time label
   -t    Node drain timeout. How long to wait for the node to drain before
         shutting it down (in seconds, default ${timeout}s)
   -n    Node batch size. How many nodes to add to the ASG. Also, how many nodes
@@ -403,11 +402,6 @@ initialize_report
 
 log "kube cluster: ${kube_context}"
 
-if [[ -n "${role}" ]]; then
-  update "${role}"
-else
-  update master
-  update worker
-fi
+update "${role}"
 
 log "run: result=\"success\""

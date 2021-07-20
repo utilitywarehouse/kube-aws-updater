@@ -8,6 +8,7 @@
 #
 # Usage:
 # * library should be sourced by `kube-aws-updater`
+# * call `initialize_report` to initialize the library
 # * call `run_report` to get a report for the ongoin run
 #
 # Shell style guide: https://google.github.io/styleguide/shellguide.html
@@ -20,11 +21,10 @@ set -o pipefail
 # GLOBAL STATE #
 ################
 
-readonly KUBE_CONTEXT="${kube_context:?"Error: variable 'kube_context' must be set"}"
-readonly NODE_ROLE="${role:?"Error: variable 'role' must be set"}"
-readonly AWS_PROFILE="${aws_profile:?"Error: variable 'aws_profile' must be set"}"
-readonly SNAPSHOTS_FILE="${SNAPSHOTS_FILE:-"./snapshots.json"}"
-
+KUBE_CONTEXT=""
+NODE_ROLE=""
+AWS_PROFILE=""
+SNAPSHOTS_FILE=""
 ASG_NAME=""
 RUN_TIMESTAMP="" # ISO8601 UTC
 
@@ -38,7 +38,12 @@ timestamp_now() {
 }
 
 # Initialize global state. Order is important
-initialize() {
+initialize_report() {
+  KUBE_CONTEXT="${kube_context:?"Error: variable 'kube_context' must be set"}"
+  NODE_ROLE="${role:?"Error: variable 'role' must be set"}"
+  AWS_PROFILE="${aws_profile:?"Error: variable 'aws_profile' must be set"}"
+  SNAPSHOTS_FILE="${SNAPSHOTS_FILE:-"./snapshots.json"}"
+
   if [ ! -s "${SNAPSHOTS_FILE}" ]; then
     echo "[]" >"${SNAPSHOTS_FILE}"
   fi
@@ -340,9 +345,3 @@ make_snapshot() {
   echo "${snapshots}" | jq --compact-output '. + ['"${timestamped}"'] + ['"${now}"']' >"${SNAPSHOTS_FILE}"
   echo "${timestamp}"
 }
-
-##############
-# STATEMENTS #
-##############
-
-initialize

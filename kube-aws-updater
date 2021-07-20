@@ -18,6 +18,8 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
+source ./report.sh
+
 log() {
   echo -e "[$(date +'%Y-%m-%dT%H:%M:%S')]: ${*}" >&2
 }
@@ -397,7 +399,7 @@ update() {
 checkdeps jq kubectl aws timeout xargs readarray
 parse_opts "${@}"
 
-source ./report.sh
+initialize_report
 
 log "kube cluster: ${kube_context}"
 

@@ -53,10 +53,10 @@ initialize_report() {
 }
 
 get_global_state() {
-  echo "KUBE_CONTEXT(ro): ${KUBE_CONTEXT}"
-  echo "NODE_ROLE(ro): ${NODE_ROLE}"
-  echo "AWS_PROFILE(ro): ${AWS_PROFILE}"
-  echo "SNAPSHOTS_FILE(ro): ${SNAPSHOTS_FILE}"
+  echo "KUBE_CONTEXT: ${KUBE_CONTEXT}"
+  echo "NODE_ROLE: ${NODE_ROLE}"
+  echo "AWS_PROFILE: ${AWS_PROFILE}"
+  echo "SNAPSHOTS_FILE: ${SNAPSHOTS_FILE}"
   echo "ASG_NAME: ${ASG_NAME}"
   echo "RUN_TIMESTAMP:  ${RUN_TIMESTAMP}"
 }

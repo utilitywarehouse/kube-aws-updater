@@ -288,7 +288,6 @@ wait_for_ready_nodes() {
     fi
     sleep 32
   done
-  run_report
   set -e
 }
 
@@ -352,6 +351,7 @@ drain_nodes() {
       wait_for_ready_nodes "${role}" "${nc}"
       retry aws "${aws_opts[@]}" --output=json autoscaling suspend-processes \
         --auto-scaling-group-name "${asg_name}" --scaling-processes "Launch"
+      run_report
     fi
     kill_node "${old_node}"
     nc=$((nc + 1))
@@ -385,11 +385,15 @@ update() {
       exit 1
   fi
 
+  run_report
+
   if [[ -z "${resume}" ]]; then
     upscale_asg "${role}" "${asg_name}" "${asg_count}"
 
     assert_asg_balance "${role}"
   fi
+
+  run_report
 
   drain_nodes "${role}" "${retire_time}" "${asg_name}" "${asg_count}"
 

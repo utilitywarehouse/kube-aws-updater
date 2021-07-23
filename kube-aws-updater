@@ -238,6 +238,7 @@ assert_asg_balance() {
 downscale_asg() {
   local asg_name=$1
   local asg_count=$2
+  local role=$3
 
   # sleep some time to allow ASG to catch and see the "Terminating" instance
   sleep 64
@@ -258,6 +259,9 @@ downscale_asg() {
   retry aws "${aws_opts[@]}" --output=json autoscaling update-auto-scaling-group \
     --auto-scaling-group-name "${asg_name}" --desired-capacity "${asg_count}" \
     --max-size "${asg_count}"
+
+  # Ensure that AZs are balanced before re-enabling ASG actions
+  assert_asg_balance "${role}"
 
   # - re-enable ASG actions
   retry aws "${aws_opts[@]}" --output=json autoscaling resume-processes \
@@ -391,7 +395,7 @@ update() {
 
   run_report
 
-  downscale_asg "${asg_name}" "${asg_count}"
+  downscale_asg "${asg_name}" "${asg_count}" "${role}"
 
   run_report
 }

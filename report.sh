@@ -266,7 +266,7 @@ node_diff() {
 ##########
 
 run_report() {
-  make_snapshot
+  make_snapshot > /dev/null
   full_report "${RUN_TIMESTAMP}" "now"
 }
 

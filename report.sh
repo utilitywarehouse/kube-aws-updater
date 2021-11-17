@@ -43,6 +43,7 @@ initialize_report() {
   NODE_ROLE="${role:?"Error: variable 'role' must be set"}"
   AWS_PROFILE="${aws_profile:?"Error: variable 'aws_profile' must be set"}"
   SNAPSHOTS_FILE="${SNAPSHOTS_FILE:-"./snapshots.json"}"
+  REPORT="${report:-"false"}"
 
   if [ ! -s "${SNAPSHOTS_FILE}" ]; then
     echo "[]" >"${SNAPSHOTS_FILE}"
@@ -266,8 +267,10 @@ node_diff() {
 ##########
 
 run_report() {
-  make_snapshot > /dev/null
-  full_report "${RUN_TIMESTAMP}" "now"
+  if [[ "${REPORT}" == "true" ]]; then
+    make_snapshot > /dev/null
+    full_report "${RUN_TIMESTAMP}" "now"
+  fi
 }
 
 full_report() {

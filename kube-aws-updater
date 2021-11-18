@@ -27,7 +27,7 @@ log() {
 usage() {
   cat <<EOF
 Usage: $0 -c <kube_context> -p <aws_profile> -r <role> -s [retire_time_label]
-        -t [timeout] -n [node_batch_size]
+        -t [timeout] -n [node_batch_size] -e [true]
 
   -s    Resume node rolling. Argument is retire_time label
   -t    Node drain timeout. How long to wait for the node to drain before
@@ -35,6 +35,8 @@ Usage: $0 -c <kube_context> -p <aws_profile> -r <role> -s [retire_time_label]
   -n    Node batch size. How many nodes to add to the ASG. Also, how many nodes
         will be drained before waiting for the ASG to stabilise again. It needs
         to be a multiple of 3 (default ${node_batch_size})
+  -e    Enable reports. If "true", show reports on cluster state on every
+        step (default "false")
 EOF
 } >&2
 
@@ -49,7 +51,7 @@ parse_opts() {
   timeout=600
   node_batch_size=3
 
-  while getopts 'c:p:r:hs:t:n:' flag; do
+  while getopts 'c:p:r:hs:t:n:e:' flag; do
     case "${flag}" in
       c) kube_context="${OPTARG}" ;;
       p) aws_profile="${OPTARG}" ;;
@@ -57,6 +59,7 @@ parse_opts() {
       s) resume="${OPTARG}" ;;
       t) timeout="${OPTARG}" ;;
       n) node_batch_size="${OPTARG}" ;;
+      e) report="${OPTARG}" ;;
       h) usage && exit 0 ;;
       *) log "Unexpected option: ${flag}" && usage && exit 1 ;;
     esac

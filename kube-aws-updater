@@ -18,6 +18,9 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
+# Static vars
+LOG_FILE='kube-updater.log'
+
 source ./report.sh
 
 log() {
@@ -27,11 +30,12 @@ log() {
 usage() {
   cat <<EOF
 Usage: $0 -c <kube_context> -p <aws_profile> -r <role> -s [retire_time_label]
-        -t [timeout] -n [node_batch_size] -e [true]
+        -t [timeout] -n [node_batch_size] -e [true] -l [promtail_cfg]
 
   -s    Resume node rolling. Argument is retire_time label
   -t    Node drain timeout. How long to wait for the node to drain before
         shutting it down (in seconds, default ${timeout}s)
+  -l    Path to promtail config (when set stdout will be streamed to loki by proxy of a log file)
   -n    Node batch size. How many nodes to add to the ASG. Also, how many nodes
         will be drained before waiting for the ASG to stabilise again. It needs
         to be a multiple of 3 (default ${node_batch_size})
@@ -49,15 +53,17 @@ parse_opts() {
   resume=''
   retire_time=$(date +"%Y-%m-%dT%H-%M-%SZ")
   timeout=600
+  promtail_cfg=''
   node_batch_size=3
 
-  while getopts 'c:p:r:hs:t:n:e:' flag; do
+  while getopts 'c:p:r:hs:t:n:e:l:' flag; do
     case "${flag}" in
       c) kube_context="${OPTARG}" ;;
       p) aws_profile="${OPTARG}" ;;
       r) role="${OPTARG}" ;;
       s) resume="${OPTARG}" ;;
       t) timeout="${OPTARG}" ;;
+      l) promtail_cfg="${OPTARG}" ;;
       n) node_batch_size="${OPTARG}" ;;
       e) report="${OPTARG}" ;;
       h) usage && exit 0 ;;
@@ -99,6 +105,18 @@ parse_opts() {
       log "Invalid profile: ${aws_profile}"
       exit 1
     fi
+  fi
+
+  if [[ -n "${promtail_cfg}" ]]; then
+    if ! command -v promtail &> /dev/null; then
+      echo "Promtail not installed"
+      exit 1
+    fi
+
+    promtail --config.file="${promtail_cfg}" --client.external-labels=context="${kube_context}",host="$(hostname)" &
+    touch "${LOG_FILE}"
+    sleep 2 # give promtail time to start
+    exec &> >(tee "${LOG_FILE}") # redirect execution through tee
   fi
 }
 
@@ -406,6 +424,9 @@ update() {
 
   run_report
 }
+
+# Cleanup child processes on exit
+trap "kill 0" EXIT
 
 checkdeps jq kubectl aws timeout xargs readarray
 parse_opts "${@}"

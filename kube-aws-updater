@@ -21,6 +21,10 @@ set -o pipefail
 # Static vars
 LOG_FILE='kube-updater.log'
 
+# if there is no "hostname" command, try "hostnamectl hostname"
+hn=hostname
+command -v hostname || hn="hostnamectl hostname"
+
 source ./report.sh
 
 log() {
@@ -113,7 +117,7 @@ parse_opts() {
       exit 1
     fi
 
-    promtail --config.file="${promtail_cfg}" --client.external-labels=context="${kube_context}",host="$(hostname)" &
+    promtail --config.file="${promtail_cfg}" --client.external-labels=context="${kube_context}",host="$($hn)" &
     touch "${LOG_FILE}"
     sleep 2 # give promtail time to start
     exec &> >(tee "${LOG_FILE}") # redirect execution through tee
@@ -388,11 +392,20 @@ update() {
   local instance_address instance_id asgs asg_name asg_count
   while : ; do
     instance_address=$(retry kubectl --context="${kube_context}" get nodes -l "role=${role},retiring=${retire_time}" -o json | jq -r '.items[0].metadata.name')
+    [[ -z ${instance_address} ]] && log "error: instance_address is empty" && exit 1
+
     instance_id=$(retry aws "${aws_opts[@]}" --output=json ec2 describe-instances --filters "Name=network-interface.private-dns-name,Values=${instance_address}" |\
       jq -r '.Reservations[].Instances[].InstanceId')
+    [[ -z ${instance_id} ]] && log "error: instance_id is empty" && exit 1
+
     asgs=$(retry aws "${aws_opts[@]}" --output=json autoscaling describe-auto-scaling-groups)
+    [[ -z ${asgs} ]] && log "error: asgs is empty" && exit 1
+
     asg_name=$(echo "${asgs}" | jq -r ".AutoScalingGroups[] | select(.Instances[].InstanceId==\"${instance_id}\") | .AutoScalingGroupName")
+
     asg_count=$(echo "${asgs}" | jq -r ".AutoScalingGroups[] | select(.AutoScalingGroupName==\"${asg_name}\") | .MinSize")
+    [[ -z ${asg_count} ]] && log "error: asg_count is empty" && exit 1
+
     if [[ -z "${asg_name}" ]]; then
         log "could not discover the ASG name, a node might be terminating, sleeping and trying again..."
         sleep 60

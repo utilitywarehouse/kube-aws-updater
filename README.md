@@ -18,7 +18,7 @@ To enable pushing logs to loki pass `-l` arg to the script along with the path
 to a valid promtail config file:
 
 ```
-./kube-merit-updater -c dev-merit -r master -n 3 -l promtail.conf
+./kube-aws-updater -c dev-merit -r master -p uw-dev-system-admin -n 3 -l promtail.conf
 ```
 
 This will run promtail as a background process within the context of the script

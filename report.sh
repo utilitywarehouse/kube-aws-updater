@@ -34,7 +34,7 @@ RUN_TIMESTAMP="" # ISO8601 UTC
 
 # Get the current timestamp, ISO8601 UTC format
 timestamp_now() {
-  date --utc +'%Y-%m-%dT%H:%M:%SZ'
+  date -u +'%Y-%m-%dT%H:%M:%SZ'
 }
 
 # Initialize global state. Order is important
